@@ -7,7 +7,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logging.getLogger("pyrogram").setLevel(logging.DEBUG)
+logging.getLogger("hydrogram").setLevel(logging.DEBUG)
 
 import os
 import asyncio
@@ -15,10 +15,10 @@ import asyncpg
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import MessageDeleteForbidden, RPCError
-from pyrogram.enums import ChatType
+from hydrogram import Client, filters
+from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from hydrogram.errors import MessageDeleteForbidden, RPCError
+from hydrogram.enums import ChatType
 
 # ==========================================
 # 1. CONFIGURAÇÃO (Variáveis de Ambiente)
@@ -37,8 +37,6 @@ if API_ID == 0 or not API_HASH or not BOT_TOKEN or ADMIN_ID == 0 or not DATABASE
 # ==========================================
 # 2. INICIALIZAÇÃO DE SERVIÇOS
 # ==========================================
-# REMOVIDO: in_memory=True
-# Agora o bot criará um arquivo up_bot.session físico para não perder a identidade.
 bot = Client(
     "up_bot_v2",
     api_id=API_ID,
@@ -88,7 +86,7 @@ async def gerar_e_enviar_listas():
     pass
 
 # ==========================================
-# 5. HANDLERS DO BOT (Pyrogram)
+# 5. HANDLERS DO BOT (Hydrogram)
 # ==========================================
 
 # --- COMANDO /START ---
