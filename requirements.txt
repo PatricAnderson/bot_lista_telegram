@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-hydrogram
-tgcrypto
+pyrogram
+TgCrypto
 asyncpg
-apscheduler
+APScheduler
