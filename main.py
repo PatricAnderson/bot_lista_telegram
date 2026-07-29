@@ -40,7 +40,7 @@ if API_ID == 0 or not API_HASH or not BOT_TOKEN or ADMIN_ID == 0 or not DATABASE
 # REMOVIDO: in_memory=True
 # Agora o bot criará um arquivo up_bot.session físico para não perder a identidade.
 bot = Client(
-    "up_bot",
+    "up_bot_v2",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
