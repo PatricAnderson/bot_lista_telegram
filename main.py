@@ -82,9 +82,6 @@ async def deletar_listas_antigas():
                 pass
             await asyncio.sleep(1)
 
-async def gerar_e_enviar_listas():
-    pass
-
 # ==========================================
 # 5. HANDLERS DO BOT (Hydrogram)
 # ==========================================
@@ -202,14 +199,13 @@ async def processar_moderacao(client, callback_query):
                 await client.leave_chat(chat_id)
             except: pass
 
-# --- BLOCO CATA-TUDO (DEBUG) ---
-@bot.on_message(filters.private)
+# --- BLOCO CATA-TUDO (DEBUG ABSOLUTO) ---
+@bot.on_message()
 async def cata_tudo(client, message):
-    print(f"🔥 DEBUG MÁXIMO: Recebi a mensagem: '{message.text}' de ID: {message.from_user.id}", flush=True)
-    try:
-        await message.reply_text("Estou vivo no Railway! Recebi sua mensagem, mas não é um comando reconhecido. Se quiser iniciar, digite /start")
-    except Exception as e:
-        print(f"💥 ERRO CATA-TUDO: Não consegui responder: {e}", flush=True)
+    print(f"🔥 CATA-TUDO ACIONADO: Mensagem recebida de {message.from_user.id if message.from_user else 'Desconhecido'}: '{message.text}'", flush=True)
+    if message.text and message.text.startswith("/start"):
+        print("⚡ Forçando execução manual do start dentro do cata-tudo!", flush=True)
+        await comando_start(client, message)
 
 # ==========================================
 # 6. CICLO DE VIDA FASTAPI
@@ -229,7 +225,7 @@ async def lifespan(app: FastAPI):
         print("⏰ Agendador ativo.", flush=True)
         
         await bot.start()
-        print(f"🤖 Bot @{(await bot.get_me()).username} Online no Railway (Polling IPv4)!", flush=True)
+        print(f"🤖 Bot @{(await bot.get_me()).username} Online no Railway!", flush=True)
         print("🚀 Servidor online!", flush=True)
         
     except Exception as e:
