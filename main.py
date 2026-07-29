@@ -6,7 +6,7 @@ from fastapi import FastAPI
 import asyncpg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Voltando para o Pyrogram original
+# Usando o Pyrogram original
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 
@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Silenciando os logs do Pyrogram para evitar o bloqueio de 500 logs/sec do Railway
+# Silenciando os logs para evitar o bloqueio de 500 logs/sec do Railway
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("asyncpg").setLevel(logging.WARNING)
@@ -92,6 +92,9 @@ async def lifespan(app: FastAPI):
         
         # 3. Liga o Bot
         try:
+            # 👇 A MELHORIA: Sincroniza o cérebro do Pyrogram com o FastAPI
+            bot.loop = asyncio.get_running_loop() 
+            
             await bot.start()
             me = await bot.get_me()
             logger.info(f"🤖 Bot @{me.username} Online no Railway!")
