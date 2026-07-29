@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     db_pool = await asyncpg.create_pool(DATABASE_URL)
     logger.info("📦 Pool do PostgreSQL iniciado.")
     
-    # 2. Cria as tabelas se for a primeira vez
+    # 2. Cria as tabelas e garante as colunas corretas de forma segura
     async with db_pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -45,15 +45,16 @@ async def lifespan(app: FastAPI):
                 username VARCHAR(255),
                 vip BOOLEAN DEFAULT FALSE
             );
+            
             CREATE TABLE IF NOT EXISTS canais (
                 chat_id BIGINT PRIMARY KEY,
                 titulo VARCHAR(255),
-                dono_id BIGINT REFERENCES usuarios(telegram_id)
+                dono_id BIGINT
             );
         """)
     logger.info("🗄️ Tabelas do banco de dados verificadas.")
 
-    # 3. Instancia o Bot DENTRO do lifespan (mesmo loop do FastAPI/Uvicorn)
+    # 3. Instancia o Bot DENTRO do lifespan
     if SESSION_STRING:
         bot = Client(
             "bot_up_canais",
