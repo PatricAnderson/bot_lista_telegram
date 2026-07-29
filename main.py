@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Usando o Pyrogram original
 from pyrogram import Client, filters
+from pyrogram.handlers import MessageHandler
 from pyrogram.errors import FloodWait
 
 # ==========================================
@@ -38,24 +39,17 @@ db_pool = None
 # ==========================================
 # 3. INICIALIZAÇÃO DO BOT (PYROGRAM)
 # ==========================================
-bot = Client(
-    "upcanais_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    in_memory=True  # Mantém a sessão na RAM para não travar o disco do Railway
-)
+# Inicializado vazio para não conflitar com o Event Loop do FastAPI
+bot = None 
 
 # ==========================================
 # 4. HANDLERS (COMANDOS DO BOT)
 # ==========================================
-@bot.on_message(filters.command("start"))
 async def start_command(client, message):
     logger.info(f"🔥 START ACIONADO por {message.from_user.first_name}")
     await message.reply_text(f"Olá, {message.from_user.first_name}! O bot está online e rodando no Railway com Pyrogram! 🚀")
 
 # Capturador de Diagnóstico: Se ele ignorar o /start, vai cair aqui e logar
-@bot.on_message(filters.all)
 async def catch_all(client, message):
     logger.warning(f"👀 MENSAGEM RECEBIDA de {message.from_user.first_name}: {message.text}")
 
@@ -76,8 +70,8 @@ async def deletar_listas_antigas():
 
 async def iniciar_pyrogram():
     """Função separada para lidar com o bot sem travar o FastAPI"""
+    global bot
     try:
-        bot.loop = asyncio.get_running_loop() 
         await bot.start()
         me = await bot.get_me()
         logger.info(f"🤖 Bot @{me.username} Online no Railway!")
@@ -92,22 +86,36 @@ async def iniciar_pyrogram():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db_pool
+    global db_pool, bot
     logger.info("🌀 Iniciando infraestrutura do UP CANAIS (Pyrogram)...")
     
     try:
-        # 1. Conecta ao Banco
+        # 1. CRIAMOS O BOT AQUI DENTRO (No loop correto do FastAPI)
+        bot = Client(
+            "upcanais_bot",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            bot_token=BOT_TOKEN,
+            in_memory=True 
+        )
+
+        # 2. REGISTRAMOS OS HANDLERS
+        # A ordem importa: o catch_all (filters.all) deve ser o último
+        bot.add_handler(MessageHandler(start_command, filters.command("start")))
+        bot.add_handler(MessageHandler(catch_all, filters.all))
+
+        # 3. Conecta ao Banco
         db_pool = await asyncpg.create_pool(dsn=DATABASE_URL)
         await init_db()
         logger.info("🗄️ Banco de dados conectado com sucesso.")
         
-        # 2. Liga o Agendador
+        # 4. Liga o Agendador
         scheduler = AsyncIOScheduler()
         scheduler.add_job(deletar_listas_antigas, 'cron', hour=10, minute=0)
         scheduler.start()
         logger.info("⏰ Agendador ativo.")
         
-        # 3. Dispara a inicialização do bot em SEGUNDO PLANO
+        # 5. Dispara a inicialização do bot em SEGUNDO PLANO
         asyncio.create_task(iniciar_pyrogram())
         
     except Exception as e:
@@ -119,10 +127,11 @@ async def lifespan(app: FastAPI):
     # Libera o Uvicorn para ligar e passar no teste do Railway
     yield
     
-    # 4. Desligamento seguro
+    # 6. Desligamento seguro
     logger.info("🛑 Desligando servidor...")
     try:
-        await bot.stop()
+        if bot:
+            await bot.stop()
     except Exception:
         pass
     if db_pool:
