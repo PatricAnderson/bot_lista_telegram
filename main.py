@@ -210,6 +210,11 @@ async def cata_tudo(client, message):
 # ==========================================
 # 6. CICLO DE VIDA FASTAPI
 # ==========================================
+app = FastAPI(title="UP CANAIS Bot API", lifespan=lifespan)
+
+@app.get("/")
+async def health_check():
+    return {"status": "online", "bot": "upacanais_bot"}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool
