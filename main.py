@@ -4,8 +4,9 @@ import asyncpg
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pyrogram import Client, filters
-from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+from pyrogram.handlers import MessageHandler, CallbackQueryHandler, ChatMemberUpdatedHandler
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.enums import ChatType, ChatMemberStatus
 
 # ==========================================
 # 1. CONFIGURAÇÃO DE LOGS
@@ -72,7 +73,7 @@ async def start_command(client, message):
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Adicionar Meu Canal", callback_data="add_canal")],
         [InlineKeyboardButton("💎 Seja VIP", callback_data="info_vip"), InlineKeyboardButton("👤 Minha Conta", callback_data="minha_conta")],
-        [InlineKeyboardButton("📞 Falar com o Suporte", url="https://t.me/patric_anderson")] # Coloque seu @ de suporte aqui
+        [InlineKeyboardButton("📞 Falar com o Suporte", url="https://t.me/SEU_USUARIO_AQUI")] # <- Mude seu usuário aqui
     ])
     
     # Envia a mensagem com o menu
@@ -89,8 +90,23 @@ async def callback_handler(client, query: CallbackQuery):
     logger.info(f"🖱️ Botão clicado: {dados} por {query.from_user.id}")
     
     if dados == "add_canal":
-        await query.answer() # Fecha a ampulheta de carregamento do botão
-        await query.message.reply_text("Para adicionar seu canal, me envie o **@username** dele ou encaminhe uma mensagem do canal aqui.")
+        await query.answer()
+        
+        # Pega as informações do próprio bot para montar o link
+        bot_info = await client.get_me()
+        
+        # Link mágico do Telegram para adicionar o bot direto como Admin no canal
+        link_admin = f"https://t.me/{bot_info.username}?startchannel=true&admin=post_messages+edit_messages+delete_messages"
+        
+        teclado_add = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link_admin)]
+        ])
+        
+        await query.message.reply_text(
+            "Para participar da lista, eu preciso ser **Administrador** do seu canal (com permissões para postar, editar e apagar mensagens).\n\n"
+            "Clique no botão abaixo, selecione seu canal e me adicione. Eu farei a verificação e o cadastro automaticamente!",
+            reply_markup=teclado_add
+        )
         
     elif dados == "info_vip":
         await query.answer()
@@ -107,8 +123,47 @@ async def callback_handler(client, query: CallbackQuery):
         await query.answer()
         await query.message.reply_text(f"👤 **Sua Conta:**\nID: `{query.from_user.id}`\nStatus: Grátis\n\n*(Em breve mostraremos seus canais cadastrados aqui!)*")
 
+async def verificar_novo_canal(client, update):
+    # Verifica se a atualização de status envolve o próprio bot
+    bot_info = await client.get_me()
+    
+    if update.new_chat_member and update.new_chat_member.user.id == bot_info.id:
+        
+        # Verifica se o local onde ele foi adicionado é um CANAL e se o status é ADMINISTRADOR
+        if update.chat.type == ChatType.CHANNEL and update.new_chat_member.status == ChatMemberStatus.ADMINISTRATOR:
+            
+            canal_titulo = update.chat.title
+            canal_username = update.chat.username or str(update.chat.id)
+            user_id = update.from_user.id # Pega o ID do usuário que fez a ação
+            
+            # Conecta ao banco para salvar o canal validado
+            async with db_pool.acquire() as conn:
+                # Verifica se o canal já existe para evitar duplicidade na lista
+                existe = await conn.fetchval("SELECT id FROM canais WHERE username = $1", canal_username)
+                
+                if not existe:
+                    await conn.execute(
+                        "INSERT INTO canais (user_id, username, titulo) VALUES ($1, $2, $3)",
+                        user_id, canal_username, canal_titulo
+                    )
+                    logger.info(f"✅ Canal {canal_titulo} (@{canal_username}) adicionado por {user_id}")
+                    
+                    # Avisa o dono no privado que deu tudo certo
+                    try:
+                        await client.send_message(
+                            user_id,
+                            f"✅ **Verificação Concluída!**\n\nO canal **{canal_titulo}** foi aprovado e adicionado à nossa base de dados com sucesso. Ele já está apto para participar das listas de divulgação!"
+                        )
+                    except Exception as e:
+                        logger.error(f"Erro ao avisar usuário {user_id} no privado: {e}")
+                else:
+                    try:
+                        await client.send_message(user_id, f"⚠️ O canal **{canal_titulo}** já está cadastrado no sistema.")
+                    except:
+                        pass
+
 async def catch_all(client, message):
-    # Função para capturar mensagens de texto normais (usaremos no futuro para ler o @ do canal)
+    # Função para capturar mensagens de texto normais
     if message.text and not message.text.startswith("/"):
         logger.info(f"Mensagem recebida de {message.from_user.first_name}: {message.text}")
 
@@ -138,6 +193,7 @@ async def lifespan(app: FastAPI):
     # 3. Registra os handlers do bot
     bot.add_handler(MessageHandler(start_command, filters.command("start")))
     bot.add_handler(CallbackQueryHandler(callback_handler))
+    bot.add_handler(ChatMemberUpdatedHandler(verificar_novo_canal))
     bot.add_handler(MessageHandler(catch_all, filters.text & ~filters.command("start")))
     
     # 4. Inicia o bot do Telegram
