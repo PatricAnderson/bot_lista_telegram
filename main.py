@@ -1,10 +1,22 @@
+import logging
+
+# ==========================================
+# RAIO-X: LOGS PROFUNDOS ATIVADOS
+# ==========================================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+# Força o Pyrogram a mostrar tudo o que está acontecendo nos bastidores
+logging.getLogger("pyrogram").setLevel(logging.DEBUG)
+
 import os
 import asyncio
 import asyncpg
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
-from pyrogram import Client, filters, idle
+from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageDeleteForbidden, RPCError
 from pyrogram.enums import ChatType
@@ -20,7 +32,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgresql://", "postgres://")
 
 if API_ID == 0 or not API_HASH or not BOT_TOKEN or ADMIN_ID == 0 or not DATABASE_URL:
-    print("❌ ERRO CRÍTICO: Faltam variáveis de ambiente essenciais (API_ID, API_HASH, BOT_TOKEN, ADMIN_ID, DATABASE_URL).", flush=True)
+    print("❌ ERRO CRÍTICO: Faltam variáveis de ambiente essenciais.", flush=True)
     exit(1)
 
 # ==========================================
@@ -81,7 +93,7 @@ async def gerar_e_enviar_listas():
 # --- COMANDO /START ---
 @bot.on_message(filters.command("start") & filters.private)
 async def comando_start(client, message):
-    print(f"DEBUG: --> RECEBIDO /start de {message.from_user.id}", flush=True)
+    print(f"🔥 DEBUG COMANDO: --> RECEBIDO /start de {message.from_user.id}", flush=True)
 
     bot_info = await client.get_me()
     url_adicionar = f"https://t.me/{bot_info.username}?startchannel=true&admin=post_messages,edit_messages,delete_messages,invite_users"
@@ -96,9 +108,9 @@ async def comando_start(client, message):
     
     try:
         await message.reply_text(texto, reply_markup=markup)
-        print(f"DEBUG: ✅ Resposta enviada para {message.from_user.id}", flush=True)
+        print(f"✅ DEBUG COMANDO: Resposta enviada para {message.from_user.id}", flush=True)
     except Exception as e:
-        print(f"DEBUG: 💥 ERRO AO RESPONDER START: {e}", flush=True)
+        print(f"💥 ERRO AO RESPONDER START: {e}", flush=True)
 
 # --- BOT ADICIONADO AO CANAL ---
 @bot.on_message(filters.new_chat_members)
@@ -192,8 +204,6 @@ async def processar_moderacao(client, callback_query):
             except: pass
 
 # --- BLOCO CATA-TUDO (DEBUG) ---
-# Este bloco DEVE ficar por último. Ele vai pegar qualquer mensagem privada
-# que não seja o comando /start.
 @bot.on_message(filters.private)
 async def cata_tudo(client, message):
     print(f"🔥 DEBUG MÁXIMO: Recebi a mensagem: '{message.text}' de ID: {message.from_user.id}", flush=True)
@@ -219,10 +229,11 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         print("⏰ Agendador ativo.", flush=True)
         
+        # Inicia o bot, que criará suas próprias tasks em background
         await bot.start()
         print(f"🤖 Bot @{(await bot.get_me()).username} Online no Railway (Polling IPv4)!", flush=True)
         
-        app.state.bot_updater = asyncio.create_task(idle())
+        # IMPORTANTE: Removida a linha do idle() para evitar travamentos de loop
         print("🚀 Servidor online!", flush=True)
         
     except Exception as e:
@@ -233,11 +244,6 @@ async def lifespan(app: FastAPI):
     yield
     
     print("🛑 Desligando servidor...", flush=True)
-    if hasattr(app.state, 'bot_updater'):
-        app.state.bot_updater.cancel()
-        try: await app.state.bot_updater
-        except asyncio.CancelledError: pass
-            
     await bot.stop()
     scheduler.shutdown()
     if db_pool: await db_pool.close()
