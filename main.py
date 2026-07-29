@@ -73,6 +73,23 @@ async def deletar_listas_antigas():
 # ==========================================
 # 6. LIFESPAN (CICLO DE VIDA DA APLICAÇÃO)
 # ==========================================
+
+async def iniciar_pyrogram():
+    """Função separada para lidar com o bot sem travar o FastAPI"""
+    try:
+        bot.loop = asyncio.get_running_loop() 
+        await bot.start()
+        me = await bot.get_me()
+        logger.info(f"🤖 Bot @{me.username} Online no Railway!")
+    except FloodWait as e:
+        logger.warning(f"⚠️ FloodWait detectado. O servidor FastAPI continuará rodando enquanto o bot aguarda {e.value} segundos em background...")
+        await asyncio.sleep(e.value)
+        await bot.start()
+        me = await bot.get_me()
+        logger.info(f"🤖 Bot @{me.username} Online após sair do castigo!")
+    except Exception as e:
+        logger.error(f"💥 Erro ao ligar o bot: {str(e)}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool
@@ -90,20 +107,8 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logger.info("⏰ Agendador ativo.")
         
-        # 3. Liga o Bot
-        try:
-            # 👇 A MELHORIA: Sincroniza o cérebro do Pyrogram com o FastAPI
-            bot.loop = asyncio.get_running_loop() 
-            
-            await bot.start()
-            me = await bot.get_me()
-            logger.info(f"🤖 Bot @{me.username} Online no Railway!")
-        except FloodWait as e:
-            logger.warning(f"⚠️ FloodWait. Aguardando {e.value} segundos...")
-            await asyncio.sleep(e.value)
-            await bot.start()
-            me = await bot.get_me()
-            logger.info(f"🤖 Bot @{me.username} Online no Railway após espera!")
+        # 3. Dispara a inicialização do bot em SEGUNDO PLANO
+        asyncio.create_task(iniciar_pyrogram())
         
     except Exception as e:
         logger.error(f"💥 ERRO CRÍTICO NA INICIALIZAÇÃO: {type(e).__name__} - {str(e)}")
@@ -111,6 +116,7 @@ async def lifespan(app: FastAPI):
             await db_pool.close()
         raise e
 
+    # Libera o Uvicorn para ligar e passar no teste do Railway
     yield
     
     # 4. Desligamento seguro
@@ -119,7 +125,6 @@ async def lifespan(app: FastAPI):
         await bot.stop()
     except Exception:
         pass
-    scheduler.shutdown()
     if db_pool:
         await db_pool.close()
     logger.info("✅ Servidor desligado com segurança.")
