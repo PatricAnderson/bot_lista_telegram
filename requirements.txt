@@ -3,3 +3,4 @@ asyncpg
 fastapi
 uvicorn
 apscheduler
+tgcrypto
