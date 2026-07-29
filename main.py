@@ -213,41 +213,53 @@ async def cata_tudo(client, message):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool
-    print("🌀 Iniciando infraestrutura do UP CANAIS...", flush=True)
+    logger.info("🌀 Iniciando infraestrutura do UP CANAIS...")
     
     try:
         db_pool = await asyncpg.create_pool(dsn=DATABASE_URL)
         await init_db()
+        logger.info("🗄️ Banco de dados conectado com sucesso.")
         
         scheduler = AsyncIOScheduler()
         scheduler.add_job(deletar_listas_antigas, 'cron', hour=10, minute=0)
         scheduler.start()
-        print("⏰ Agendador ativo.", flush=True)
+        logger.info("⏰ Agendador ativo.")
         
-        # Inicializa o cliente do Hydrogram
-        await bot.start()
-        
-        # FORÇA O REGISTRO DO DISPATCHER NO LOOP DE EVENTOS
-        if not bot.dispatcher.started:
-            await bot.dispatcher.start()
-            
-        print(f"🤖 Bot @{(await bot.get_me()).username} Online no Railway!", flush=True)
-        print("🚀 Servidor online!", flush=True)
+        # Tenta iniciar o bot com tratamento para FloodWait
+        try:
+            await bot.start()
+            if not bot.dispatcher.started:
+                await bot.dispatcher.start()
+            me = await bot.get_me()
+            logger.info(f"🤖 Bot @{me.username} Online no Railway!")
+        except FloodWait as e:
+            logger.warning(f"⚠️ FloodWait detectado pelo Telegram. O bot vai aguardar {e.value} segundos para tentar reconectar...")
+            await asyncio.sleep(e.value)
+            await bot.start()
+            if not bot.dispatcher.started:
+                await bot.dispatcher.start()
+            me = await bot.get_me()
+            logger.info(f"🤖 Bot @{me.username} Online no Railway após espera!")
         
     except Exception as e:
-        print(f"💥 ERRO CRÍTICO NA INICIALIZAÇÃO: {e}", flush=True)
-        if db_pool: await db_pool.close()
+        logger.error(f"💥 ERRO CRÍTICO NA INICIALIZAÇÃO: {e}")
+        if db_pool:
+            await db_pool.close()
         raise e
 
     yield
     
-    print("🛑 Desligando servidor...", flush=True)
-    if bot.dispatcher.started:
-        await bot.dispatcher.stop()
-    await bot.stop()
+    logger.info("🛑 Desligando servidor...")
+    try:
+        if bot.dispatcher.started:
+            await bot.dispatcher.stop()
+        await bot.stop()
+    except Exception:
+        pass
     scheduler.shutdown()
-    if db_pool: await db_pool.close()
-    print("✅ Servidor desligado com segurança.", flush=True)
+    if db_pool:
+        await db_pool.close()
+    logger.info("✅ Servidor desligado com segurança.")
 
 # ==========================================
 # 7. ROTAS FASTAPI
