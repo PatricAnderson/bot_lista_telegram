@@ -6,11 +6,10 @@ from fastapi import FastAPI
 import asyncpg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from hydrogram import Client, filters
-from hydrogram.types import Message
 from hydrogram.errors import FloodWait
 
 # ==========================================
-# 1. CONFIGURAÇÃO DE LOGS E VARIÁVEIS
+# 1. CONFIGURAÇÃO DE LOGS
 # ==========================================
 logging.basicConfig(
     level=logging.INFO,
@@ -18,11 +17,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 🔴 ISSO AQUI EVITA O BLOQUEIO DO RAILWAY (Cala o spam das bibliotecas)
+# Silenciando logs excessivos para não estourar o limite do Railway
 logging.getLogger("hydrogram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("asyncpg").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
+# ==========================================
+# 2. VARIÁVEIS DE AMBIENTE
+# ==========================================
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -31,48 +34,42 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 db_pool = None
 
 # ==========================================
-# 2. INICIALIZAÇÃO DO HYDROGRAM (MODO BOT)
+# 3. INICIALIZAÇÃO DO BOT (HYDROGRAM)
 # ==========================================
 bot = Client(
-    name="up_bot_v2",
+    "upcanais_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    ipv6=False,
-    in_memory=True
+    in_memory=True  # Essencial para rodar no Railway sem travar a sessão
 )
 
 # ==========================================
-# 3. ROTINAS DE BANCO DE DADOS E TAREFAS
-# ==========================================
-async def init_db():
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS bot_logs (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                command TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-async def deletar_listas_antigas():
-    logger.info("Executando limpeza diária de registros antigos...")
-
-# ==========================================
-# 4. HANDLERS / EVENTOS DO TELEGRAM
+# 4. HANDLERS (COMANDOS DO BOT)
 # ==========================================
 @bot.on_message(filters.command("start"))
-async def start_handler(client: Client, message: Message):
-    logger.info(f"🔥 START ACIONADO por {message.from_user.id if message.from_user else 'Desconhecido'}")
-    await message.reply_text("👋 Olá! O bot **UP CANAIS** está online, conectado e operando com sucesso no Railway!")
+async def start_command(client, message):
+    logger.info(f"🔥 START ACIONADO por {message.from_user.first_name}")
+    await message.reply_text(f"Olá, {message.from_user.first_name}! O bot está online e operando no Railway! 🚀")
 
-@bot.on_message()
-async def cata_tudo(client: Client, message: Message):
-    logger.info(f"🔥 CATA-TUDO ACIONADO | Mensagem de {message.chat.id}: {message.text}")
+# Capturador de Diagnóstico: Pega qualquer mensagem que não seja comando
+@bot.on_message(filters.all)
+async def catch_all(client, message):
+    logger.warning(f"👀 MENSAGEM RECEBIDA de {message.from_user.first_name}: {message.text}")
 
 # ==========================================
-# 5. CICLO DE VIDA FASTAPI (LIFESPAN)
+# 5. FUNÇÕES DO BANCO E SCHEDULER
+# ==========================================
+async def init_db():
+    # Lógica de criação de tabelas (adicione suas querys aqui depois)
+    pass
+
+async def deletar_listas_antigas():
+    logger.info("🧹 Limpando listas antigas...")
+    pass
+
+# ==========================================
+# 6. LIFESPAN (CICLO DE VIDA DA APLICAÇÃO)
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -80,15 +77,18 @@ async def lifespan(app: FastAPI):
     logger.info("🌀 Iniciando infraestrutura do UP CANAIS...")
     
     try:
+        # 1. Conecta ao Banco
         db_pool = await asyncpg.create_pool(dsn=DATABASE_URL)
         await init_db()
         logger.info("🗄️ Banco de dados conectado com sucesso.")
         
+        # 2. Liga o Agendador
         scheduler = AsyncIOScheduler()
         scheduler.add_job(deletar_listas_antigas, 'cron', hour=10, minute=0)
         scheduler.start()
         logger.info("⏰ Agendador ativo.")
         
+        # 3. Liga o Bot
         try:
             await bot.start()
             me = await bot.get_me()
@@ -101,7 +101,6 @@ async def lifespan(app: FastAPI):
             logger.info(f"🤖 Bot @{me.username} Online no Railway após espera!")
         
     except Exception as e:
-        # 🔴 CORREÇÃO: Imprimir apenas o NOME do erro e a mensagem curta, não o JSON gigante
         logger.error(f"💥 ERRO CRÍTICO NA INICIALIZAÇÃO: {type(e).__name__} - {str(e)}")
         if db_pool:
             await db_pool.close()
@@ -109,6 +108,7 @@ async def lifespan(app: FastAPI):
 
     yield
     
+    # 4. Desligamento seguro
     logger.info("🛑 Desligando servidor...")
     try:
         await bot.stop()
@@ -120,10 +120,10 @@ async def lifespan(app: FastAPI):
     logger.info("✅ Servidor desligado com segurança.")
 
 # ==========================================
-# 6. APLICAÇÃO FASTAPI
+# 7. FASTAPI APP
 # ==========================================
-app = FastAPI(title="UP CANAIS Bot API", lifespan=lifespan)
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
-async def health_check():
-    return {"status": "online", "bot": "upacanais_bot"}
+async def root():
+    return {"status": "online", "bot": "UP CANAIS"}
