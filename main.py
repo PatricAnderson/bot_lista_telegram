@@ -1,41 +1,32 @@
-import logging
 import os
+import logging
 import asyncio
-import asyncpg
 from contextlib import asynccontextmanager
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
+import asyncpg
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from hydrogram import Client, filters
-from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from hydrogram.types import Message
 from hydrogram.errors import FloodWait
-from hydrogram.enums import ChatType
 
 # ==========================================
-# RAIO-X: LOGS PROFUNDOS ATIVADOS
+# 1. CONFIGURAÇÃO DE LOGS E VARIÁVEIS
 # ==========================================
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("up_bot")
-logging.getLogger("hydrogram").setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-# ==========================================
-# 1. CONFIGURAÇÃO (Variáveis de Ambiente)
-# ==========================================
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgresql://", "postgres://")
-
-if API_ID == 0 or not API_HASH or not BOT_TOKEN or ADMIN_ID == 0 or not DATABASE_URL:
-    print("❌ ERRO CRÍTICO: Faltam variáveis de ambiente essenciais.", flush=True)
-    exit(1)
+db_pool = None
 
 # ==========================================
-# 2. INICIALIZAÇÃO DE SERVIÇOS
+# 2. INICIALIZAÇÃO DO HYDROGRAM (MODO BOT)
 # ==========================================
 bot = Client(
     name="up_bot_v2",
@@ -46,170 +37,37 @@ bot = Client(
     in_memory=True
 )
 
-db_pool = None
-scheduler = AsyncIOScheduler()
-
 # ==========================================
-# 3. BANCO DE DADOS
+# 3. ROTINAS DE BANCO DE DADOS E TAREFAS
 # ==========================================
 async def init_db():
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS canais (
-                chat_id BIGINT PRIMARY KEY,
-                dono_id BIGINT,
-                nome_canal TEXT,
-                categoria TEXT,
-                status TEXT DEFAULT 'pendente_categoria',
-                last_msg_id BIGINT
-            );
+            CREATE TABLE IF NOT EXISTS bot_logs (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                command TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
         """)
-        logger.info("✅ Tabelas do banco de dados garantidas.")
 
-# ==========================================
-# 4. AGENDAMENTO (Scheduler Jobs)
-# ==========================================
 async def deletar_listas_antigas():
-    logger.info("🗓️ Executando tarefa agendada: Limpeza de listas antigas...")
-    async with db_pool.acquire() as conn:
-        canais = await conn.fetch("SELECT chat_id, last_msg_id FROM canais WHERE last_msg_id IS NOT NULL AND status IN ('ativo', 'vip')")
-        for canal in canais:
-            chat_id = canal['chat_id']
-            msg_id = canal['last_msg_id']
-            try:
-                await bot.delete_messages(chat_id=chat_id, message_ids=msg_id)
-                await conn.execute("UPDATE canais SET last_msg_id = NULL WHERE chat_id = $1", chat_id)
-            except Exception:
-                pass
-            await asyncio.sleep(1)
+    logger.info("Executando limpeza diária de registros antigos...")
 
 # ==========================================
-# 5. HANDLERS DO BOT (Hydrogram)
+# 4. HANDLERS / EVENTOS DO TELEGRAM
 # ==========================================
-
-@bot.on_message(filters.command("start") & filters.private)
-async def comando_start(client, message):
-    logger.info(f"🔥 DEBUG COMANDO: --> RECEBIDO /start de {message.from_user.id}")
-
-    bot_info = await client.get_me()
-    url_adicionar = f"https://t.me/{bot_info.username}?startchannel=true&admin=post_messages,edit_messages,delete_messages,invite_users"
-    
-    texto = (
-        "👋 **Bem-vindo ao UP CANAIS!**\n\n"
-        "Para incluir seu canal em nossas listas diárias, adicione este bot "
-        "ao seu canal como **Administrador** clicando no botão abaixo.\n\n"
-        "Depois de adicionar, eu chamarei você aqui na DM para configurar."
-    )
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Adicionar ao meu Canal", url=url_adicionar)]])
-    
-    try:
-        await message.reply_text(texto, reply_markup=markup)
-        logger.info(f"✅ DEBUG COMANDO: Resposta enviada para {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"💥 ERRO AO RESPONDER START: {e}")
-
-@bot.on_message(filters.new_chat_members)
-async def bot_adicionado_canal(client, message):
-    bot_info = await client.get_me()
-    me_joined = any(membro.id == bot_info.id for membro in (message.new_chat_members or []))
-
-    if me_joined and message.chat.type in (ChatType.CHANNEL, ChatType.SUPERGROUP):
-        chat_id = message.chat.id
-        nome_canal = message.chat.title
-        dono_id = message.from_user.id if message.from_user else None
-        
-        logger.info(f"🤖 Bot adicionado no canal: {nome_canal} ({chat_id})")
-
-        if not dono_id:
-            return
-
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO canais (chat_id, dono_id, nome_canal, status) 
-                VALUES ($1, $2, $3, 'pendente_categoria')
-                ON CONFLICT (chat_id) DO UPDATE SET dono_id = $2, nome_canal = $3, status = 'pendente_categoria';
-            """, chat_id, dono_id, nome_canal)
-        
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Filmes e Séries", callback_data=f"cat_filmes_{chat_id}")],
-            [InlineKeyboardButton("💻 Tecnologia", callback_data=f"cat_tech_{chat_id}")],
-            [InlineKeyboardButton("🔞 NSFW", callback_data=f"cat_nsfw_{chat_id}")]
-        ])
-        
-        try:
-            await client.send_message(dono_id, f"✅ Fui adicionado no canal **{nome_canal}**!\n\nAgora, selecione a categoria:", reply_markup=markup)
-        except Exception as e:
-            logger.warning(f"⚠️ Erro DM de categoria para {dono_id}: {e}")
-
-@bot.on_callback_query(filters.regex(r"^cat_"))
-async def processar_categoria(client, callback_query):
-    dados = callback_query.data.split("_")
-    categoria_limpa = dados[1].upper()
-    chat_id = int(dados[2])
-    dono_id = callback_query.from_user.id
-    
-    async with db_pool.acquire() as conn:
-        result = await conn.execute("""
-            UPDATE canais SET categoria = $1, status = 'quarentena' 
-            WHERE chat_id = $2 AND dono_id = $3 AND status = 'pendente_categoria';
-        """, categoria_limpa, chat_id, dono_id)
-        
-        if result == "UPDATE 0":
-            await callback_query.answer("⚠️ Já configurado ou não pertence a você.")
-            return
-
-        row = await conn.fetchrow("SELECT nome_canal FROM canais WHERE chat_id = $1", chat_id)
-        nome_canal = row['nome_canal']
-    
-    await callback_query.edit_message_text(f"✅ Categoria **{categoria_limpa}** salva! Canal enviado para quarentena.")
-    
-    texto_admin = f"🚨 **QUARENTENA**\n**Canal:** {nome_canal}\n**Cat:** {categoria_limpa}\n**ID:** `{chat_id}`"
-    markup_admin = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Aprovar", callback_data=f"aprovar_{chat_id}_{dono_id}"),
-         InlineKeyboardButton("❌ Rejeitar", callback_data=f"rejeitar_{chat_id}_{dono_id}")]
-    ])
-    
-    try:
-        await client.send_message(ADMIN_ID, texto_admin, reply_markup=markup_admin)
-    except: 
-        pass
-
-@bot.on_callback_query(filters.regex(r"^(aprovar|rejeitar)_") & filters.user(ADMIN_ID))
-async def processar_moderacao(client, callback_query):
-    dados = callback_query.data.split("_")
-    acao, chat_id, dono_id = dados[0], int(dados[1]), int(dados[2])
-    
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT nome_canal, status FROM canais WHERE chat_id = $1", chat_id)
-        if not row or row['status'] != 'quarentena': 
-            return
-        nome_canal = row['nome_canal']
-
-        if acao == "aprovar":
-            await conn.execute("UPDATE canais SET status = 'ativo' WHERE chat_id = $1", chat_id)
-            await callback_query.edit_message_text(f"✅ Canal `{chat_id}` APROVADO.")
-            try: 
-                await client.send_message(dono_id, f"🎉 Canal **{nome_canal}** aprovado!")
-            except: 
-                pass
-        elif acao == "rejeitar":
-            await conn.execute("UPDATE canais SET status = 'rejeitado' WHERE chat_id = $1", chat_id)
-            await callback_query.edit_message_text(f"❌ Canal `{chat_id}` REJEITADO.")
-            try:
-                await client.send_message(dono_id, f"⚠️ Canal **{nome_canal}** rejeitado.")
-                await client.leave_chat(chat_id)
-            except: 
-                pass
+@bot.on_message(filters.command("start"))
+async def start_handler(client: Client, message: Message):
+    logger.info(f"🔥 START ACIONADO por {message.from_user.id if message.from_user else 'Desconhecido'}")
+    await message.reply_text("👋 Olá! O bot **UP CANAIS** está online, conectado e operando com sucesso no Railway!")
 
 @bot.on_message()
-async def cata_tudo(client, message):
-    logger.info(f"🔥 CATA-TUDO ACIONADO: Mensagem de {message.from_user.id if message.from_user else 'Desconhecido'}: '{message.text}'")
-    if message.text and message.text.startswith("/start"):
-        logger.info("⚡ Forçando execução manual do start dentro do cata-tudo!")
-        await comando_start(client, message)
+async def cata_tudo(client: Client, message: Message):
+    logger.info(f"🔥 CATA-TUDO ACIONADO | Mensagem de {message.chat.id}: {message.text}")
 
 # ==========================================
-# 6. CICLO DE VIDA E ROTAS FASTAPI
+# 5. CICLO DE VIDA FASTAPI (LIFESPAN)
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -221,6 +79,7 @@ async def lifespan(app: FastAPI):
         await init_db()
         logger.info("🗄️ Banco de dados conectado com sucesso.")
         
+        scheduler = AsyncIOScheduler()
         scheduler.add_job(deletar_listas_antigas, 'cron', hour=10, minute=0)
         scheduler.start()
         logger.info("⏰ Agendador ativo.")
@@ -230,15 +89,15 @@ async def lifespan(app: FastAPI):
             if not bot.dispatcher.started:
                 await bot.dispatcher.start()
             me = await bot.get_me()
-            logger.info(f"🤖 Bot @{me.username} Online!")
+            logger.info(f"🤖 Bot @{me.username} Online no Railway!")
         except FloodWait as e:
-            logger.warning(f"⚠️ FloodWait detectado. Aguardando {e.value} segundos...")
+            logger.warning(f"⚠️ FloodWait detectado pelo Telegram. O bot vai aguardar {e.value} segundos...")
             await asyncio.sleep(e.value)
             await bot.start()
             if not bot.dispatcher.started:
                 await bot.dispatcher.start()
             me = await bot.get_me()
-            logger.info(f"🤖 Bot @{me.username} Online após espera!")
+            logger.info(f"🤖 Bot @{me.username} Online no Railway após espera!")
         
     except Exception as e:
         logger.error(f"💥 ERRO CRÍTICO NA INICIALIZAÇÃO: {e}")
@@ -260,6 +119,9 @@ async def lifespan(app: FastAPI):
         await db_pool.close()
     logger.info("✅ Servidor desligado com segurança.")
 
+# ==========================================
+# 6. APLICAÇÃO FASTAPI
+# ==========================================
 app = FastAPI(title="UP CANAIS Bot API", lifespan=lifespan)
 
 @app.get("/")
