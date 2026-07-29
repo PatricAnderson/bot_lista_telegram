@@ -85,17 +85,14 @@ async def lifespan(app: FastAPI):
         logger.info("⏰ Agendador ativo.")
         
         try:
+            # bot.start() já inicia o dispatcher e as conexões automaticamente
             await bot.start()
-            if not bot.dispatcher.started:
-                await bot.dispatcher.start()
             me = await bot.get_me()
             logger.info(f"🤖 Bot @{me.username} Online no Railway!")
         except FloodWait as e:
             logger.warning(f"⚠️ FloodWait detectado pelo Telegram. O bot vai aguardar {e.value} segundos...")
             await asyncio.sleep(e.value)
             await bot.start()
-            if not bot.dispatcher.started:
-                await bot.dispatcher.start()
             me = await bot.get_me()
             logger.info(f"🤖 Bot @{me.username} Online no Railway após espera!")
         
@@ -109,11 +106,11 @@ async def lifespan(app: FastAPI):
     
     logger.info("🛑 Desligando servidor...")
     try:
-        if bot.dispatcher.started:
-            await bot.dispatcher.stop()
+        # bot.stop() já desliga o dispatcher e a conexão com segurança
         await bot.stop()
     except Exception:
         pass
+    
     scheduler.shutdown()
     if db_pool:
         await db_pool.close()
