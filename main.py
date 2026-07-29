@@ -7,7 +7,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-# Força o Pyrogram a mostrar tudo o que está acontecendo nos bastidores
 logging.getLogger("pyrogram").setLevel(logging.DEBUG)
 
 import os
@@ -38,12 +37,13 @@ if API_ID == 0 or not API_HASH or not BOT_TOKEN or ADMIN_ID == 0 or not DATABASE
 # ==========================================
 # 2. INICIALIZAÇÃO DE SERVIÇOS
 # ==========================================
+# REMOVIDO: in_memory=True
+# Agora o bot criará um arquivo up_bot.session físico para não perder a identidade.
 bot = Client(
     "up_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    in_memory=True,
     ipv6=False
 )
 
@@ -229,11 +229,8 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         print("⏰ Agendador ativo.", flush=True)
         
-        # Inicia o bot, que criará suas próprias tasks em background
         await bot.start()
         print(f"🤖 Bot @{(await bot.get_me()).username} Online no Railway (Polling IPv4)!", flush=True)
-        
-        # IMPORTANTE: Removida a linha do idle() para evitar travamentos de loop
         print("🚀 Servidor online!", flush=True)
         
     except Exception as e:
