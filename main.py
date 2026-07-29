@@ -199,6 +199,13 @@ async def lifespan(app: FastAPI):
     # 4. Inicia o bot do Telegram
     await bot.start()
     logger.info(f"🤖 Bot @{bot.me.username} Online no Railway!")
+
+    # === GERA A STRING DE SESSÃO DIRETO NO LOG ===
+    string_sessao = await bot.export_session_string()
+    logger.info("=" * 60)
+    logger.info(f"🔑 SUA SESSION STRING É: {string_sessao}")
+    logger.info("=" * 60)
+    # =============================================
     
     # Entrega o controle para o FastAPI rodar
     yield
