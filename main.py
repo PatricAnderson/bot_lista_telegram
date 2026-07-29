@@ -14,9 +14,14 @@ from hydrogram.errors import FloodWait
 # ==========================================
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# 🔴 ISSO AQUI EVITA O BLOQUEIO DO RAILWAY (Cala o spam das bibliotecas)
+logging.getLogger("hydrogram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("asyncpg").setLevel(logging.WARNING)
 
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
@@ -85,19 +90,19 @@ async def lifespan(app: FastAPI):
         logger.info("⏰ Agendador ativo.")
         
         try:
-            # bot.start() já inicia o dispatcher e as conexões automaticamente
             await bot.start()
             me = await bot.get_me()
             logger.info(f"🤖 Bot @{me.username} Online no Railway!")
         except FloodWait as e:
-            logger.warning(f"⚠️ FloodWait detectado pelo Telegram. O bot vai aguardar {e.value} segundos...")
+            logger.warning(f"⚠️ FloodWait. Aguardando {e.value} segundos...")
             await asyncio.sleep(e.value)
             await bot.start()
             me = await bot.get_me()
             logger.info(f"🤖 Bot @{me.username} Online no Railway após espera!")
         
     except Exception as e:
-        logger.error(f"💥 ERRO CRÍTICO NA INICIALIZAÇÃO: {e}")
+        # 🔴 CORREÇÃO: Imprimir apenas o NOME do erro e a mensagem curta, não o JSON gigante
+        logger.error(f"💥 ERRO CRÍTICO NA INICIALIZAÇÃO: {type(e).__name__} - {str(e)}")
         if db_pool:
             await db_pool.close()
         raise e
@@ -106,11 +111,9 @@ async def lifespan(app: FastAPI):
     
     logger.info("🛑 Desligando servidor...")
     try:
-        # bot.stop() já desliga o dispatcher e a conexão com segurança
         await bot.stop()
     except Exception:
         pass
-    
     scheduler.shutdown()
     if db_pool:
         await db_pool.close()
