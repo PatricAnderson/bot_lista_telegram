@@ -38,7 +38,7 @@ if API_ID == 0 or not API_HASH or not BOT_TOKEN or ADMIN_ID == 0 or not DATABASE
 # 2. INICIALIZAÇÃO DE SERVIÇOS
 # ==========================================
 bot = Client(
-    "up_bot_v2",
+    name="up_bot_v2",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
