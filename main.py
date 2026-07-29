@@ -224,7 +224,13 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         print("⏰ Agendador ativo.", flush=True)
         
+        # Inicializa o cliente do Hydrogram
         await bot.start()
+        
+        # FORÇA O REGISTRO DO DISPATCHER NO LOOP DE EVENTOS
+        if not bot.dispatcher.started:
+            await bot.dispatcher.start()
+            
         print(f"🤖 Bot @{(await bot.get_me()).username} Online no Railway!", flush=True)
         print("🚀 Servidor online!", flush=True)
         
@@ -236,6 +242,8 @@ async def lifespan(app: FastAPI):
     yield
     
     print("🛑 Desligando servidor...", flush=True)
+    if bot.dispatcher.started:
+        await bot.dispatcher.stop()
     await bot.stop()
     scheduler.shutdown()
     if db_pool: await db_pool.close()
