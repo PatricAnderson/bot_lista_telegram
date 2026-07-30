@@ -603,8 +603,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"🤖 Bot @{bot.me.username} Online e pronto!")
 
     fuso_horario = ZoneInfo("America/Sao_Paulo")
-    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=12, minute=0, timezone=fuso_horario))
-    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=20, minute=0, timezone=fuso_horario))
+    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=14, minute=0, timezone=fuso_horario))
+    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=21, minute=0, timezone=fuso_horario))
     
     # NOVO: Varredura Semanal todo Domingo às 03:00 da madrugada
     scheduler.add_job(monitorar_membros_semanal, CronTrigger(day_of_week='sun', hour=3, minute=0, timezone=fuso_horario))
