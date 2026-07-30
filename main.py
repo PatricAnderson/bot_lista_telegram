@@ -30,7 +30,23 @@ bot = None
 scheduler = AsyncIOScheduler()
 
 # ==========================================
-# 3. FUNÇÃO DE DISPARO DA TROCA DE DIVULGAÇÃO POR CATEGORIA
+# 3. LISTA DE CATEGORIAS DISPONÍVEIS
+# ==========================================
+CATEGORIAS_DISPONIVEIS = {
+    "filmes": "🎬 Filmes, Séries & Animes",
+    "adulto": "🔞 Adulto / NSFW",
+    "tech": "💻 Tecnologia, Games & Softwares",
+    "noticias": "📢 Notícias, Política & Utilidades",
+    "financas": "📈 Finanças, Cripto & Investimentos",
+    "esportes": "⚽ Esportes & Futebol",
+    "musica": "🎵 Músicas, Áudios & Valeton",
+    "humor": "😂 Humor, Memes & Entretenimento",
+    "vendas": "🛒 Vendas, Afiliados & Lojas",
+    "geral": "🌐 Variedades & Geral"
+}
+
+# ==========================================
+# 4. FUNÇÃO DE DISPARO DA TROCA DE DIVULGAÇÃO
 # ==========================================
 async def disparar_troca_por_categoria():
     if not bot:
@@ -39,38 +55,33 @@ async def disparar_troca_por_categoria():
 
     try:
         async with db_pool.acquire() as conn:
-            # Busca todas as categorias ativas que possuem canais cadastrados
-            categorias = await conn.fetch("SELECT DISTINCT categoria FROM canais WHERE ativo = TRUE")
+            categorias = await conn.fetch("SELECT DISTINCT categoria FROM canais WHERE ativo = TRUE AND categoria IS NOT NULL")
 
             for cat_row in categorias:
                 categoria = cat_row['categoria']
 
-                # 1. Busca 4 VIPs da categoria (ou rotação geral se preferir)
                 vips = await conn.fetch(
                     "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE LIMIT 4", 
                     categoria
                 )
                 
-                # 2. Busca 14 canais normais da categoria (embaralhados)
                 normais = await conn.fetch(
                     "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE ORDER BY RANDOM() LIMIT 14", 
                     categoria
                 )
 
-                # 3. Busca os links fixos do dono para esta categoria específica
                 links_fixos = await conn.fetch(
                     "SELECT titulo, url FROM links_fixos WHERE categoria = $1", 
                     categoria
                 )
 
-                # 4. Pega todos os canais que devem RECEBER a lista nesta categoria
                 destinos = await conn.fetch("SELECT chat_id FROM canais WHERE categoria = $1 AND ativo = TRUE", categoria)
 
                 if not destinos:
                     continue
 
-                # Montagem da Lista
-                texto_lista = f"🔥 **LISTA DE DIVULGAÇÃO - {categoria.upper()}** 🔥\n\n"
+                nome_cat_formatado = CATEGORIAS_DISPONIVEIS.get(categoria, categoria.upper())
+                texto_lista = f"🔥 **LISTA DE DIVULGAÇÃO - {nome_cat_formatado}** 🔥\n\n"
                 
                 if vips:
                     texto_lista += "💎 **DESTAQUES VIP** 💎\n"
@@ -98,7 +109,6 @@ async def disparar_troca_por_categoria():
                     [InlineKeyboardButton("🤖 Cadastrar Meu Canal Grátis", url=f"https://t.me/{bot_username}?start=start")]
                 ])
 
-                # Dispara a lista para cada canal participante da categoria
                 for dest in destinos:
                     try:
                         await bot.send_message(
@@ -110,13 +120,13 @@ async def disparar_troca_por_categoria():
                     except Exception as e:
                         logger.error(f"Erro ao enviar lista para o canal {dest['chat_id']}: {e}")
 
-        logger.info("✅ Ciclo de troca de divulgação por categorias concluído com sucesso!")
+        logger.info("✅ Ciclo de troca de divulgação concluído com sucesso!")
 
     except Exception as e:
         logger.error(f"❌ Erro no agendador de listas: {e}")
 
 # ==========================================
-# 4. CICLO DE VIDA DO FASTAPI E BOT
+# 5. CICLO DE VIDA DO FASTAPI E BOT
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -125,7 +135,6 @@ async def lifespan(app: FastAPI):
     db_pool = await asyncpg.create_pool(DATABASE_URL)
     logger.info("📦 Pool do PostgreSQL iniciado.")
     
-    # Criação segura das tabelas com suporte a categorias, links fixos e controle de status
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("""
@@ -158,7 +167,6 @@ async def lifespan(app: FastAPI):
     else:
         bot = Client("bot_up_canais", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
-    # Handler /start e Seleção de Categoria
     @bot.on_message(filters.command("start") & filters.private)
     async def start_command(client: Client, message):
         user_id = message.from_user.id
@@ -170,14 +178,17 @@ async def lifespan(app: FastAPI):
                 ON CONFLICT (telegram_id) DO UPDATE SET username = EXCLUDED.username
             """, user_id, username)
 
+        b_username = client.me.username
+        link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
+
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Adicionar Canal", callback_data="add_canal")],
+            [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link_adicao)],
             [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
         ])
         await message.reply_text(
             "👋 **Bem-vindo ao UP CANAIS!**\n\n"
-            "O sistema oficial de troca de divulgação inteligente do Telegram.\n"
-            "Escolha uma opção abaixo:",
+            "Para cadastrar seu canal na rede de troca de divulgações, clique no botão abaixo e adicione-me como **Administrador** no seu canal:\n\n"
+            "*(Após adicionar, eu te enviarei uma mensagem aqui para você escolher a categoria do seu canal).*",
             reply_markup=keyboard
         )
 
@@ -185,47 +196,30 @@ async def lifespan(app: FastAPI):
     async def callback_handler(client: Client, callback_query):
         data = callback_query.data
         
-        if data == "add_canal":
-            # Exibe as categorias permitidas por botões inline (Evita erros de digitação)
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎬 Filmes & Séries", callback_data="cat_filmes")],
-                [InlineKeyboardButton("🔞 Adulto / NSFW", callback_data="cat_adulto")],
-                [InlineKeyboardButton("💻 Tecnologia & Games", callback_data="cat_tech")],
-                [InlineKeyboardButton("📢 Notícias & Utilidades", callback_data="cat_noticias")],
-                [InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_menu")]
-            ])
-            await callback_query.message.edit_text(
-                "📁 **Selecione a Categoria do seu Canal:**\n\n"
-                "Isso garante que seu link só aparecerá no nicho correto.",
-                reply_markup=keyboard
-            )
-            
-        elif data.startswith("cat_"):
-            categoria = data.replace("cat_", "")
-            b_username = client.me.username
-            # Link com permissões necessárias exigidas
-            link = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link)],
-                [InlineKeyboardButton("⬅️ Escolher Outra Categoria", callback_data="add_canal")]
-            ])
-            await callback_query.message.edit_text(
-                f"✅ Categoria selecionada: **{categoria.upper()}**\n\n"
-                "Agora clique no botão abaixo para adicionar o bot como administrador no seu canal com todas as permissões necessárias:",
-                reply_markup=keyboard
-            )
-            
-        elif data == "conta":
+        if data == "conta":
             await callback_query.answer("Sua conta está ativa na nossa rede!", show_alert=True)
             
-        elif data == "voltar_menu":
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Adicionar Canal", callback_data="add_canal")],
-                [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
-            ])
-            await callback_query.message.edit_text("Menu principal:", reply_markup=keyboard)
+        elif data.startswith("setcat_"):
+            # O formato do callback será setcat_CHATID_CATEGORIA
+            partes = data.split("_", 2)
+            if len(partes) == 3:
+                chat_id = int(partes[1])
+                categoria = partes[2]
+                
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE canais SET categoria = $1 WHERE chat_id = $2",
+                        categoria, chat_id
+                    )
+                
+                nome_cat = CATEGORIAS_DISPONIVEIS.get(categoria, categoria)
+                await callback_query.message.edit_text(
+                    f"🎉 **Canal configurado com sucesso!**\n\n"
+                    f"📁 Categoria definida: **{nome_cat}**\n"
+                    f"Seu canal já está participando das trocas automáticas de divulgação!"
+                )
 
+    # DETECÇÃO QUANDO O BOT É ADICIONADO COMO ADMIN NO CANAL
     @bot.on_chat_member_updated()
     async def bot_added_to_channel(client: Client, update: ChatMemberUpdated):
         if update.new_chat_member and update.new_chat_member.user.is_self:
@@ -236,7 +230,6 @@ async def lifespan(app: FastAPI):
                 
                 if user_id:
                     try:
-                        # Obtém link de convite e contagem de membros atualizada
                         chat_info = await client.get_chat(chat_id)
                         membros = await client.get_chat_member_count(chat_id)
                         invite_link = chat_info.invite_link or chat_info.username
@@ -249,7 +242,7 @@ async def lifespan(app: FastAPI):
                             )
                             return
 
-                        # Salvando pendente ou ativo no banco (conforme sua preferência de controle)
+                        # Salva provisoriamente no banco sem categoria (ou aguardando escolha)
                         async with db_pool.acquire() as conn:
                             await conn.execute("""
                                 INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo)
@@ -258,22 +251,36 @@ async def lifespan(app: FastAPI):
                                 SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
                                     invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE
                             """, chat_id, chat_title, user_id, invite_link, membros)
-                        
+
+                        # Monta os botões com todas as categorias disponíveis
+                        botoes_categorias = []
+                        linha_temp = []
+                        for cat_key, cat_nome in CATEGORIAS_DISPONIVEIS.items():
+                            linha_temp.append(InlineKeyboardButton(cat_nome, callback_data=f"setcat_{chat_id}_{cat_key}"))
+                            if len(linha_temp) == 2: # 2 colunas por linha
+                                botoes_categorias.append(linha_temp)
+                                linha_temp = []
+                        if linha_temp:
+                            botoes_categorias.append(linha_temp)
+
+                        keyboard_cats = InlineKeyboardMarkup(botoes_categorias)
+
                         await client.send_message(
                             chat_id=user_id,
-                            text=f"✅ Sucesso! O canal **{chat_title}** foi cadastrado com {membros} membros e está apto para as trocas!"
+                            text=f"✅ Fui adicionado com sucesso no canal **{chat_title}** ({membros} membros)!\n\n"
+                                 f"Agora, selecione abaixo a **categoria** correta do seu canal:",
+                            reply_markup=keyboard_cats
                         )
                     except Exception as e:
-                        logger.error(f"Erro ao registrar canal {chat_id}: {e}")
+                        logger.error(f"Erro ao processar canal adicionado {chat_id}: {e}")
 
     await bot.start()
-    logger.info(f"🤖 Bot @{bot.me.username} Online e pronto!")
+    logger.info(f"🤖 Bot @{bot.me.username} Online com fluxo invertido e novas categorias!")
 
-    # Configuração do Agendador (Disparo 2 vezes ao dia, ex: 12:00 e 20:00)
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=12, minute=0))
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=20, minute=0))
     scheduler.start()
-    logger.info("⏰ Agendador de listas por categoria ativado.")
+    logger.info("⏰ Agendador ativado.")
     
     yield
     
@@ -282,11 +289,8 @@ async def lifespan(app: FastAPI):
     await db_pool.close()
     logger.info("🛑 Sistema encerrado.")
 
-# ==========================================
-# 5. ROTAS DO FASTAPI
-# ==========================================
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "UP CANAIS - Sistema de Troca por Categoria Rodando 100%!"}
+    return {"status": "UP CANAIS - Fluxo de Categorias Atualizado 100%!"}
