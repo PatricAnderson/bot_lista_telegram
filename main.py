@@ -152,7 +152,7 @@ async def disparar_troca_por_categoria():
         return False
 
 
-# Rotina 2: Varredura Semanal de Membros (Validação da Regra de 500+)
+# Rotina 2: Varredura Semanal de Membros (Validação da Regra de 100+)
 async def monitorar_membros_semanal():
     if not bot:
         return
@@ -173,8 +173,8 @@ async def monitorar_membros_semanal():
                     # Atualiza o novo número de membros no banco de dados para os status sempre baterem
                     await conn.execute("UPDATE canais SET membros = $1 WHERE chat_id = $2", membros_atuais, chat_id)
 
-                    # Se caiu para menos de 500, aplica a suspensão
-                    if 0 < membros_atuais < 500:
+                    # Se caiu para menos de 100, aplica a suspensão
+                    if 0 < membros_atuais < 100:
                         await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
                         logger.info(f"📉 Canal {chat_id} pausado por queda de membros ({membros_atuais}).")
                         try:
@@ -182,7 +182,7 @@ async def monitorar_membros_semanal():
                                 dono_id,
                                 f"📉 **Alerta de Queda de Membros!**\n\n"
                                 f"Durante nossa varredura semanal, notamos que seu canal **{titulo}** caiu para {membros_atuais} membros.\n"
-                                f"Como nossa regra exige um mínimo de **500 membros**, seu canal foi temporariamente **pausado**.\n\n"
+                                f"Como nossa regra exige um mínimo de **100 membros**, seu canal foi temporariamente **pausado**.\n\n"
                                 f"Assim que recuperar o engajamento, acesse seu painel e atualize os dados para voltar a participar!"
                             )
                         except Exception:
@@ -487,9 +487,9 @@ async def lifespan(app: FastAPI):
                 novo_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
                 novos_membros = getattr(chat_info, "members_count", 0)
 
-                # Regra: Se ao atualizar o cara tem menos de 500, bloqueia
-                if novos_membros > 0 and novos_membros < 500:
-                    await callback_query.answer(f"O canal tem apenas {novos_membros} inscritos. O mínimo é 500. Não é possível ativar.", show_alert=True)
+                # Regra: Se ao atualizar o cara tem menos de 100, bloqueia
+                if novos_membros > 0 and novos_membros < 100:
+                    await callback_query.answer(f"O canal tem apenas {novos_membros} inscritos. O mínimo é 100. Não é possível ativar.", show_alert=True)
                     return
 
                 async with db_pool.acquire() as conn:
@@ -574,8 +574,8 @@ async def lifespan(app: FastAPI):
                 membros = getattr(chat_info, "members_count", 0)
                 invite_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
 
-                if membros > 0 and membros < 500:
-                    await client.send_message(user_id, f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O mínimo é 500.")
+                if membros > 0 and membros < 100:
+                    await client.send_message(user_id, f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O mínimo é 100.")
                     return
 
                 async with db_pool.acquire() as conn:
