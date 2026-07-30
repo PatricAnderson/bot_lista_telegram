@@ -57,32 +57,32 @@ async def disparar_troca_por_categoria():
 
     try:
         async with db_pool.acquire() as conn:
-            categorias = await conn.fetch("SELECT DISTINCT categoria FROM canais WHERE ativo = TRUE AND categoria IS NOT NULL")
+            # Apenas canais ativos E aprovados participam
+            categorias = await conn.fetch("SELECT DISTINCT categoria FROM canais WHERE ativo = TRUE AND aprovado = TRUE AND categoria IS NOT NULL")
 
             if not categorias:
-                logger.info("⚠️ Nenhuma categoria com canais ativos encontrada para disparo.")
+                logger.info("⚠️ Nenhuma categoria com canais aprovados e ativos encontrada para disparo.")
                 return False
 
             for cat_row in categorias:
                 categoria = cat_row['categoria']
 
                 vips = await conn.fetch(
-                    "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE LIMIT 4", 
+                    "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE AND aprovado = TRUE LIMIT 4", 
                     categoria
                 )
                 
                 normais = await conn.fetch(
-                    "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE ORDER BY RANDOM() LIMIT 14", 
+                    "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE ORDER BY RANDOM() LIMIT 14", 
                     categoria
                 )
 
-                # Puxa links fixos específicos da categoria OU globais ('todas')
                 links_fixos = await conn.fetch(
                     "SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", 
                     categoria
                 )
 
-                destinos = await conn.fetch("SELECT chat_id FROM canais WHERE categoria = $1 AND ativo = TRUE", categoria)
+                destinos = await conn.fetch("SELECT chat_id FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE", categoria)
 
                 if not destinos:
                     continue
@@ -97,16 +97,13 @@ async def disparar_troca_por_categoria():
 
                 botoes = []
 
-                # 1. VIPs
                 for v in vips:
                     link = v['invite_link'] or "https://t.me/"
                     botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=link)])
 
-                # 2. Links Fixos (Específicos da categoria ou globais)
                 for lf in links_fixos:
                     botoes.append([InlineKeyboardButton(f"⭐ {lf['titulo']}", url=lf['url'])])
 
-                # 3. Normais em grade de 2 colunas
                 linha_dupla = []
                 for n in normais:
                     link = n['invite_link'] or "https://t.me/"
@@ -117,7 +114,6 @@ async def disparar_troca_por_categoria():
                 if linha_dupla:
                     botoes.append(linha_dupla)
 
-                # 4. Botão de rodapé
                 bot_username = bot.me.username
                 botoes.append([
                     InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot_username}?start=start")
@@ -171,7 +167,8 @@ async def lifespan(app: FastAPI):
                     invite_link TEXT,
                     membros INT DEFAULT 0,
                     vip BOOLEAN DEFAULT FALSE,
-                    ativo BOOLEAN DEFAULT TRUE
+                    ativo BOOLEAN DEFAULT TRUE,
+                    aprovado BOOLEAN DEFAULT FALSE
                 );
                 
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS invite_link TEXT;
@@ -179,6 +176,7 @@ async def lifespan(app: FastAPI):
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS categoria VARCHAR(100);
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS vip BOOLEAN DEFAULT FALSE;
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS ativo BOOLEAN DEFAULT TRUE;
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS aprovado BOOLEAN DEFAULT FALSE;
 
                 CREATE TABLE IF NOT EXISTS links_fixos (
                     id SERIAL PRIMARY KEY,
@@ -215,7 +213,7 @@ async def lifespan(app: FastAPI):
         ]
         
         if ADMIN_ID and user_id == ADMIN_ID:
-            keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin (Links Fixos)", callback_data="admin_painel")])
+            keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin", callback_data="admin_painel")])
 
         keyboard = InlineKeyboardMarkup(keyboard_rows)
         await message.reply_text(
@@ -233,11 +231,12 @@ async def lifespan(app: FastAPI):
             return
         
         keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏳ Canais Pendentes de Aprovação", callback_data="admin_pendentes")],
             [InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink")],
             [InlineKeyboardButton("📋 Listar / Remover Links Fixos", callback_data="admin_listlinks")],
             [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
         ])
-        await message.reply_text("🛠️ **Painel de Administração - Links Fixos**\n\nEscolha uma opção:", reply_markup=keyboard)
+        await message.reply_text("🛠️ **Painel de Administração**\n\nEscolha uma opção:", reply_markup=keyboard)
 
     @bot.on_message(filters.command("testar") & filters.private)
     async def testar_comando(client: Client, message):
@@ -246,12 +245,12 @@ async def lifespan(app: FastAPI):
             await message.reply_text("⛔ Acesso negado.")
             return
 
-        await message.reply_text("🚀 Executando disparo de teste das listas em todos os canais...")
+        await message.reply_text("🚀 Executando disparo de teste das listas em todos os canais aprovados...")
         sucesso = await disparar_troca_por_categoria()
         if sucesso:
-            await message.reply_text("✅ Disparo de teste concluído com sucesso em todos os canais ativos!")
+            await message.reply_text("✅ Disparo de teste concluído com sucesso!")
         else:
-            await message.reply_text("❌ Falha no disparo ou nenhum canal ativo encontrado.")
+            await message.reply_text("❌ Falha no disparo ou nenhum canal aprovado/ativo encontrado.")
 
     @bot.on_callback_query()
     async def callback_handler(client: Client, callback_query):
@@ -266,11 +265,87 @@ async def lifespan(app: FastAPI):
                 await callback_query.answer("Acesso negado.", show_alert=True)
                 return
             keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏳ Canais Pendentes de Aprovação", callback_data="admin_pendentes")],
                 [InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink")],
                 [InlineKeyboardButton("📋 Listar / Remover Links Fixos", callback_data="admin_listlinks")],
                 [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
             ])
-            await callback_query.message.edit_text("🛠️ **Painel de Administração - Links Fixos**\n\nEscolha uma opção:", reply_markup=keyboard)
+            await callback_query.message.edit_text("🛠️ **Painel de Administração**\n\nEscolha uma opção:", reply_markup=keyboard)
+
+        elif data == "admin_pendentes":
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+
+            async with db_pool.acquire() as conn:
+                pendentes = await conn.fetch("SELECT chat_id, titulo, categoria, membros, dono_id FROM canais WHERE aprovado = FALSE AND ativo = TRUE")
+
+            if not pendentes:
+                await callback_query.message.edit_text(
+                    "🎉 Não há nenhum canal pendente de aprovação no momento!",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")]])
+                )
+                return
+
+            texto = "⏳ **Canais Aguardando Aprovação:**\n\n"
+            botoes = []
+            for p in pendentes:
+                cat_nome = CATEGORIAS_DISPONIVEIS.get(p['categoria'], "Não definida")
+                texto += f"• **{p['titulo']}**\n  └ Cat: {cat_nome} | Membros: {p['membros']}\n\n"
+                botoes.append([
+                    InlineKeyboardButton(f"✅ Aprovar: {p['titulo'][:15]}", callback_data=f"aprovar_{p['chat_id']}"),
+                    InlineKeyboardButton(f"❌ Rejeitar", callback_data=f"rejeitar_{p['chat_id']}")
+                ])
+
+            botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
+            await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
+
+        elif data.startswith("aprovar_"):
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+            chat_id = int(data.split("_")[1])
+
+            async with db_pool.acquire() as conn:
+                canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE WHERE chat_id = $1 RETURNING titulo, dono_id", chat_id)
+
+            await callback_query.answer("✅ Canal aprovado com sucesso!", show_alert=True)
+
+            if canal and canal['dono_id']:
+                try:
+                    await client.send_message(
+                        chat_id=canal['dono_id'],
+                        text=f"🎉 Parabéns! Seu canal **{canal['titulo']}** foi **aprovado** pelo administrador e já está participando da rede de divulgação!"
+                    )
+                except:
+                    pass
+
+            # Recarrega a lista de pendentes
+            callback_query.data = "admin_pendentes"
+            return await callback_handler(client, callback_query)
+
+        elif data.startswith("rejeitar_"):
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+            chat_id = int(data.split("_")[1])
+
+            async with db_pool.acquire() as conn:
+                canal = await conn.fetchrow("UPDATE canais SET ativo = FALSE WHERE chat_id = $1 RETURNING titulo, dono_id", chat_id)
+
+            await callback_query.answer("❌ Canal rejeitado/removido.", show_alert=True)
+
+            if canal and canal['dono_id']:
+                try:
+                    await client.send_message(
+                        chat_id=canal['dono_id'],
+                        text=f"❌ Infelizmente, o cadastro do seu canal **{canal['titulo']}** foi rejeitado pelo administrador."
+                    )
+                except:
+                    pass
+
+            callback_query.data = "admin_pendentes"
+            return await callback_handler(client, callback_query)
 
         elif data == "admin_addlink":
             if ADMIN_ID and user_id != ADMIN_ID:
@@ -291,7 +366,7 @@ async def lifespan(app: FastAPI):
             botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
 
             await callback_query.message.edit_text(
-                "➕ **Adicionar Link Fixo**\n\nSelecione em qual categoria este link fixo vai aparecer (ou escolha **TODAS**):",
+                "➕ **Adicionar Link Fixo**\n\nSelecione em qual categoria este link fixo vai aparecer:",
                 reply_markup=InlineKeyboardMarkup(botoes)
             )
 
@@ -305,7 +380,7 @@ async def lifespan(app: FastAPI):
             nome_exibicao = "🌐 Todas as Categorias" if cat_key == "todas" else CATEGORIAS_DISPONIVEIS.get(cat_key, cat_key)
             await callback_query.message.edit_text(
                 f"✍️ Alvo selecionado: **{nome_exibicao}**\n\n"
-                f"Agora, envie o **Título** que aparecerá no link fixo (Ex: *Canal Oficial*):",
+                f"Agora, envie o **Título** que aparecerá no link fixo:",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_painel")]])
             )
 
@@ -353,7 +428,7 @@ async def lifespan(app: FastAPI):
 
             async with db_pool.acquire() as conn:
                 canais = await conn.fetch(
-                    "SELECT chat_id, titulo, categoria, membros FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET $2",
+                    "SELECT chat_id, titulo, categoria, membros, aprovado FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET $2",
                     user_id, offset
                 )
                 total_row = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1 AND ativo = TRUE", user_id)
@@ -371,7 +446,9 @@ async def lifespan(app: FastAPI):
 
             for canal in canais:
                 cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
-                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome} | Membros: {canal['membros']}\n\n"
+                status_aprovacao = "✅ Aprovado" if canal['aprovado'] else "⏳ Pendente de Aprovação"
+                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome}\n  └ Status: {status_aprovacao}\n\n"
+                
                 botoes.append([
                     InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
                 ])
@@ -399,10 +476,12 @@ async def lifespan(app: FastAPI):
                 return
 
             cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
+            status_aprovacao = "✅ Aprovado" if canal['aprovado'] else "⏳ Pendente de Aprovação"
             texto = (
                 f"⚙️ **Gerenciando Canal:** {canal['titulo']}\n\n"
                 f"📁 Categoria: {cat_nome}\n"
                 f"👥 Membros: {canal['membros']}\n"
+                f"📌 Status: {status_aprovacao}\n"
                 f"🔗 Link Atual: `{canal['invite_link'] or 'Nenhum'}`\n\n"
                 f"Escolha o que deseja fazer:"
             )
@@ -435,10 +514,12 @@ async def lifespan(app: FastAPI):
 
                 if canal:
                     cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
+                    status_aprovacao = "✅ Aprovado" if canal['aprovado'] else "⏳ Pendente de Aprovação"
                     texto = (
                         f"⚙️ **Gerenciando Canal:** {canal['titulo']}\n\n"
                         f"📁 Categoria: {cat_nome}\n"
                         f"👥 Membros: {canal['membros']}\n"
+                        f"📌 Status: {status_aprovacao}\n"
                         f"🔗 Link Atual: `{canal['invite_link'] or 'Nenhum'}`\n\n"
                         f"Escolha o que deseja fazer:"
                     )
@@ -462,11 +543,11 @@ async def lifespan(app: FastAPI):
             async with db_pool.acquire() as conn:
                 await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
 
-            await callback_query.answer("🗑️ Canal removido da rede de divulgação com sucesso!", show_alert=True)
+            await callback_query.answer("🗑️ Canal removido com sucesso!", show_alert=True)
             
             async with db_pool.acquire() as conn:
                 canais = await conn.fetch(
-                    "SELECT chat_id, titulo, categoria, membros FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET 0",
+                    "SELECT chat_id, titulo, categoria, membros, aprovado FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET 0",
                     user_id
                 )
                 total_row = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1 AND ativo = TRUE", user_id)
@@ -483,7 +564,7 @@ async def lifespan(app: FastAPI):
             botoes = []
             for canal in canais:
                 cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
-                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome} | Membros: {canal['membros']}\n\n"
+                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome}\n\n"
                 botoes.append([
                     InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
                 ])
@@ -503,7 +584,7 @@ async def lifespan(app: FastAPI):
                 [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
             ]
             if ADMIN_ID and user_id == ADMIN_ID:
-                keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin (Links Fixos)", callback_data="admin_painel")])
+                keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin", callback_data="admin_painel")])
 
             keyboard = InlineKeyboardMarkup(keyboard_rows)
             try:
@@ -538,9 +619,29 @@ async def lifespan(app: FastAPI):
                 await callback_query.message.edit_text(
                     f"🎉 **Canal configurado com sucesso!**\n\n"
                     f"📁 Categoria definida: **{nome_cat}**\n"
-                    f"Seu canal já está participando das trocas automáticas de divulgação!",
+                    f"⏳ *Seu canal foi enviado para aprovação do administrador e logo estará participando das listas!*",
                     reply_markup=keyboard
                 )
+
+                # Notifica o Administrador sobre o novo canal pendente
+                if ADMIN_ID:
+                    try:
+                        async with db_pool.acquire() as conn:
+                            info_canal = await conn.fetchrow("SELECT titulo, membros FROM canais WHERE chat_id = $1", chat_id)
+                        
+                        await client.send_message(
+                            chat_id=ADMIN_ID,
+                            text=f"🔔 **Novo Canal Pendente de Aprovação!**\n\n"
+                                 f"📌 Canal: **{info_canal['titulo'] if info_canal else 'Desconhecido'}**\n"
+                                 f"📁 Categoria: {nome_cat}\n"
+                                 f"👥 Membros: {info_canal['membros'] if info_canal else 0}\n\n"
+                                 f"Acesse o `/admin` para aprovar ou rejeitar.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("🛠️ Ir para Painel de Pendentes", callback_data="admin_pendentes")]
+                            ])
+                        )
+                    except Exception as ex:
+                        logger.error(f"Erro ao notificar admin sobre novo canal: {ex}")
 
     @bot.on_message(filters.private & ~filters.command(["start", "admin", "testar"]))
     async def capturar_texto_admin(client: Client, message):
@@ -559,7 +660,7 @@ async def lifespan(app: FastAPI):
             estado["etapa"] = "aguardando_url"
             await message.reply_text(
                 f"✅ Título salvo: **{texto}**\n\n"
-                f"Agora, envie a **URL / Link de destino** (Ex: `https://t.me/seu_grupo`):"
+                f"Agora, envie a **URL / Link de destino**:"
             )
         elif estado["etapa"] == "aguardando_url":
             categoria = estado["categoria"]
@@ -613,8 +714,8 @@ async def lifespan(app: FastAPI):
 
                     async with db_pool.acquire() as conn:
                         await conn.execute("""
-                            INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo)
-                            VALUES ($1, $2, $3, $4, $5, TRUE)
+                            INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo, aprovado)
+                            VALUES ($1, $2, $3, $4, $5, TRUE, FALSE)
                             ON CONFLICT (chat_id) DO UPDATE 
                             SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
                                 invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE
@@ -638,7 +739,7 @@ async def lifespan(app: FastAPI):
                              f"Agora, selecione abaixo a **categoria** correta do seu canal:",
                         reply_markup=keyboard_cats
                     )
-                    logger.info(f"✅ Canal {chat_title} ({chat_id}) registrado com sucesso para o usuário {user_id}!")
+                    logger.info(f"✅ Canal {chat_title} ({chat_id}) registrado como pendente para o usuário {user_id}!")
 
                 except Exception as e:
                     logger.error(f"❌ Erro ao processar canal adicionado {chat_id}: {e}")
