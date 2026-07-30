@@ -200,7 +200,6 @@ async def lifespan(app: FastAPI):
             await callback_query.answer("Sua conta está ativa na nossa rede!", show_alert=True)
             
         elif data.startswith("setcat_"):
-            # O formato do callback será setcat_CHATID_CATEGORIA
             partes = data.split("_", 2)
             if len(partes) == 3:
                 chat_id = int(partes[1])
@@ -219,7 +218,6 @@ async def lifespan(app: FastAPI):
                     f"Seu canal já está participando das trocas automáticas de divulgação!"
                 )
 
-    # DETECÇÃO QUANDO O BOT É ADICIONADO COMO ADMIN NO CANAL
     @bot.on_chat_member_updated()
     async def bot_added_to_channel(client: Client, update: ChatMemberUpdated):
         if update.new_chat_member and update.new_chat_member.user.is_self:
@@ -228,59 +226,68 @@ async def lifespan(app: FastAPI):
                 chat_title = update.chat.title
                 user_id = update.from_user.id if update.from_user else None
                 
-                if user_id:
-                    try:
-                        chat_info = await client.get_chat(chat_id)
-                        membros = await client.get_chat_member_count(chat_id)
-                        invite_link = chat_info.invite_link or chat_info.username
+                if not user_id:
+                    logger.warning(f"⚠️ O bot foi adicionado ao canal {chat_title} ({chat_id}), mas o ID do usuário não foi retornado.")
+                    return
 
-                        # Validação mínima de inscritos (Ex: 500 membros)
-                        if membros < 500:
-                            await client.send_message(
-                                chat_id=user_id,
-                                text=f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O requisito mínimo é de 500 membros para participar."
-                            )
-                            return
+                try:
+                    chat_info = await client.get_chat(chat_id)
+                    membros = getattr(chat_info, "members_count", 0)
+                    invite_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
 
-                        # Salva provisoriamente no banco sem categoria (ou aguardando escolha)
-                        async with db_pool.acquire() as conn:
-                            await conn.execute("""
-                                INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo)
-                                VALUES ($1, $2, $3, $4, $5, TRUE)
-                                ON CONFLICT (chat_id) DO UPDATE 
-                                SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
-                                    invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE
-                            """, chat_id, chat_title, user_id, invite_link, membros)
-
-                        # Monta os botões com todas as categorias disponíveis
-                        botoes_categorias = []
-                        linha_temp = []
-                        for cat_key, cat_nome in CATEGORIAS_DISPONIVEIS.items():
-                            linha_temp.append(InlineKeyboardButton(cat_nome, callback_data=f"setcat_{chat_id}_{cat_key}"))
-                            if len(linha_temp) == 2: # 2 colunas por linha
-                                botoes_categorias.append(linha_temp)
-                                linha_temp = []
-                        if linha_temp:
-                            botoes_categorias.append(linha_temp)
-
-                        keyboard_cats = InlineKeyboardMarkup(botoes_categorias)
-
+                    if membros > 0 and membros < 500:
                         await client.send_message(
                             chat_id=user_id,
-                            text=f"✅ Fui adicionado com sucesso no canal **{chat_title}** ({membros} membros)!\n\n"
-                                 f"Agora, selecione abaixo a **categoria** correta do seu canal:",
-                            reply_markup=keyboard_cats
+                            text=f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O requisito mínimo é de 500 membros para participar."
                         )
-                    except Exception as e:
-                        logger.error(f"Erro ao processar canal adicionado {chat_id}: {e}")
+                        return
+
+                    async with db_pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo)
+                            VALUES ($1, $2, $3, $4, $5, TRUE)
+                            ON CONFLICT (chat_id) DO UPDATE 
+                            SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
+                                invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE
+                        """, chat_id, chat_title, user_id, invite_link, membros)
+
+                    botoes_categorias = []
+                    linha_temp = []
+                    for cat_key, cat_nome in CATEGORIAS_DISPONIVEIS.items():
+                        linha_temp.append(InlineKeyboardButton(cat_nome, callback_data=f"setcat_{chat_id}_{cat_key}"))
+                        if len(linha_temp) == 2:
+                            botoes_categorias.append(linha_temp)
+                            linha_temp = []
+                    if linha_temp:
+                        botoes_categorias.append(linha_temp)
+
+                    keyboard_cats = InlineKeyboardMarkup(botoes_categorias)
+
+                    await client.send_message(
+                        chat_id=user_id,
+                        text=f"✅ Fui adicionado com sucesso no canal **{chat_title}**!\n\n"
+                             f"Agora, selecione abaixo a **categoria** correta do seu canal:",
+                        reply_markup=keyboard_cats
+                    )
+                    logger.info(f"✅ Canal {chat_title} ({chat_id}) registrado com sucesso para o usuário {user_id}!")
+
+                except Exception as e:
+                    logger.error(f"❌ Erro ao processar canal adicionado {chat_id}: {e}")
+                    try:
+                        await client.send_message(
+                            chat_id=user_id,
+                            text="⚠️ Fui adicionado ao canal, mas ocorreu um erro interno. Verifique se você já iniciou uma conversa comigo no chat privado (/start)."
+                        )
+                    except:
+                        pass
 
     await bot.start()
-    logger.info(f"🤖 Bot @{bot.me.username} Online com fluxo invertido e novas categorias!")
+    logger.info(f"🤖 Bot @{bot.me.username} Online e pronto!")
 
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=12, minute=0))
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=20, minute=0))
     scheduler.start()
-    logger.info("⏰ Agendador ativado.")
+    logger.info("⏰ Agendador de listas por categoria ativado.")
     
     yield
     
@@ -293,4 +300,4 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "UP CANAIS - Fluxo de Categorias Atualizado 100%!"}
+    return {"status": "UP CANAIS - Sistema Rodando 100%!"}
