@@ -125,9 +125,11 @@ async def disparar_troca_por_categoria():
                         logger.error(f"Erro ao enviar lista para o canal {dest['chat_id']}: {e}")
 
         logger.info("✅ Ciclo de troca de divulgação concluído com sucesso!")
+        return True
 
     except Exception as e:
         logger.error(f"❌ Erro no agendador de listas: {e}")
+        return False
 
 # ==========================================
 # 5. CICLO DE VIDA DO FASTAPI E BOT
@@ -199,7 +201,6 @@ async def lifespan(app: FastAPI):
             [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
         ]
         
-        # Se for o administrador, adiciona o botão de painel admin no /start
         if ADMIN_ID and user_id == ADMIN_ID:
             keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin (Links Fixos)", callback_data="admin_painel")])
 
@@ -224,6 +225,20 @@ async def lifespan(app: FastAPI):
             [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
         ])
         await message.reply_text("🛠️ **Painel de Administração - Links Fixos**\n\nEscolha uma opção:", reply_markup=keyboard)
+
+    @bot.on_message(filters.command("testar") & filters.private)
+    async def testar_comando(client: Client, message):
+        user_id = message.from_user.id
+        if ADMIN_ID and user_id != ADMIN_ID:
+            await message.reply_text("⛔ Acesso negado.")
+            return
+
+        await message.reply_text("🚀 Executando disparo de teste das listas de divulgação agora...")
+        sucesso = await disparar_troca_por_categoria()
+        if sucesso:
+            await message.reply_text("✅ Disparo de teste concluído com sucesso! Verifique os canais.")
+        else:
+            await message.reply_text("❌ Ocorreu um erro durante o disparo de teste. Verifique os logs.")
 
     @bot.on_callback_query()
     async def callback_handler(client: Client, callback_query):
@@ -312,7 +327,6 @@ async def lifespan(app: FastAPI):
                 await conn.execute("DELETE FROM links_fixos WHERE id = $1", link_id)
             
             await callback_query.answer("🗑️ Link fixo removido com sucesso!", show_alert=True)
-            # Recarrega a lista
             callback_query.data = "admin_listlinks"
             return await callback_handler(client, callback_query)
 
@@ -512,8 +526,7 @@ async def lifespan(app: FastAPI):
                     reply_markup=keyboard
                 )
 
-    # Captura de texto do Admin para criar os links fixos interativamente
-    @bot.on_message(filters.private & ~filters.command(["start", "admin"]))
+    @bot.on_message(filters.private & ~filters.command(["start", "admin", "testar"]))
     async def capturar_texto_admin(client: Client, message):
         user_id = message.from_user.id
         if not ADMIN_ID or user_id != ADMIN_ID:
