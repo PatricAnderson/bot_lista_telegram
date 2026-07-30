@@ -135,6 +135,7 @@ async def lifespan(app: FastAPI):
     db_pool = await asyncpg.create_pool(DATABASE_URL)
     logger.info("📦 Pool do PostgreSQL iniciado.")
     
+    # Criação e atualização segura das tabelas e colunas
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("""
@@ -143,6 +144,7 @@ async def lifespan(app: FastAPI):
                     username VARCHAR(255),
                     vip BOOLEAN DEFAULT FALSE
                 );
+                
                 CREATE TABLE IF NOT EXISTS canais (
                     chat_id BIGINT PRIMARY KEY,
                     titulo VARCHAR(255),
@@ -153,6 +155,13 @@ async def lifespan(app: FastAPI):
                     vip BOOLEAN DEFAULT FALSE,
                     ativo BOOLEAN DEFAULT TRUE
                 );
+                
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS invite_link TEXT;
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS membros INT DEFAULT 0;
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS categoria VARCHAR(100);
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS vip BOOLEAN DEFAULT FALSE;
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS ativo BOOLEAN DEFAULT TRUE;
+
                 CREATE TABLE IF NOT EXISTS links_fixos (
                     id SERIAL PRIMARY KEY,
                     titulo VARCHAR(255),
@@ -160,7 +169,7 @@ async def lifespan(app: FastAPI):
                     categoria VARCHAR(100)
                 );
             """)
-    logger.info("🗄️ Tabelas estruturadas com sucesso.")
+    logger.info("🗄️ Tabelas e colunas estruturadas com sucesso.")
 
     if SESSION_STRING:
         bot = Client("bot_up_canais", session_string=SESSION_STRING, api_id=API_ID, api_hash=API_HASH)
