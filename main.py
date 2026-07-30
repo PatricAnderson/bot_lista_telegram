@@ -23,14 +23,12 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))  # Seu ID numérico do Telegram do Admin
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 
 # Variáveis globais
 db_pool = None
 bot = None
 scheduler = AsyncIOScheduler()
-
-# Estado temporário para criação de links fixos via chat: {user_id: {"categoria": "...", "etapa": "titulo/url"}}
 admin_estados = {}
 
 # ==========================================
@@ -55,11 +53,15 @@ CATEGORIAS_DISPONIVEIS = {
 async def disparar_troca_por_categoria():
     if not bot:
         logger.error("Bot não inicializado para o disparo.")
-        return
+        return False
 
     try:
         async with db_pool.acquire() as conn:
             categorias = await conn.fetch("SELECT DISTINCT categoria FROM canais WHERE ativo = TRUE AND categoria IS NOT NULL")
+
+            if not categorias:
+                logger.info("⚠️ Nenhuma categoria com canais ativos encontrada para disparo.")
+                return False
 
             for cat_row in categorias:
                 categoria = cat_row['categoria']
@@ -85,34 +87,46 @@ async def disparar_troca_por_categoria():
                     continue
 
                 nome_cat_formatado = CATEGORIAS_DISPONIVEIS.get(categoria, categoria.upper())
-                texto_lista = f"🔥 **LISTA DE DIVULGAÇÃO - {nome_cat_formatado}** 🔥\n\n"
                 
-                if vips:
-                    texto_lista += "💎 **DESTAQUES VIP** 💎\n"
-                    for v in vips:
-                        link = v['invite_link'] or "https://t.me/"
-                        texto_lista += f"• [{v['titulo']}]({link})\n"
-                    texto_lista += "\n"
+                # Texto limpo de introdução (como na referência)
+                texto_lista = (
+                    f"🔥 **MELHORES CANAIS - {nome_cat_formatado}** 🔥\n\n"
+                    f"✨ Conteúdos exclusivos, atualizados e sem censura.\n\n"
+                    f"👇 *Escolha abaixo e acesse agora!*"
+                )
 
-                if links_fixos:
-                    texto_lista += "⭐ **NOSSAS REDES / INDICADOS** ⭐\n"
-                    for lf in links_fixos:
-                        texto_lista += f"• [{lf['titulo']}]({lf['url']})\n"
-                    texto_lista += "\n"
+                # Construção dos botões estilo grade (1 ou 2 por linha)
+                botoes = []
 
-                if normais:
-                    texto_lista += "🚀 **CANAIS PARCEIROS** 🚀\n"
-                    for n in normais:
-                        link = n['invite_link'] or "https://t.me/"
-                        texto_lista += f"• [{n['titulo']}]({link})\n"
-                
-                texto_lista += "\n👇 *Quer seu canal na próxima lista? Clique abaixo!*"
+                # 1. Adiciona os VIPs (Linha única por canal ou divididos)
+                for v in vips:
+                    link = v['invite_link'] or "https://t.me/"
+                    botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=link)])
 
+                # 2. Adiciona os Links Fixos
+                for lf in links_fixos:
+                    botoes.append([InlineKeyboardButton(f"⭐ {lf['titulo']}", url=lf['url'])])
+
+                # 3. Adiciona os Canais Normais (distribuídos em 2 colunas para ficar igual à imagem)
+                linha_dupla = []
+                for n in normais:
+                    link = n['invite_link'] or "https://t.me/"
+                    linha_dupla.append(InlineKeyboardButton(f"🚀 {n['titulo']}", url=link))
+                    if len(linha_dupla) == 2:
+                        botoes.append(linha_dupla)
+                        linha_dupla = []
+                if linha_dupla:
+                    botoes.append(linha_dupla)
+
+                # 4. Botão de rodapé para participar da lista
                 bot_username = bot.me.username
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🤖 Cadastrar Meu Canal Grátis", url=f"https://t.me/{bot_username}?start=start")]
+                botoes.append([
+                    InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot_username}?start=start")
                 ])
 
+                keyboard = InlineKeyboardMarkup(botoes)
+
+                # Envia para TODOS os canais ativos desta categoria
                 for dest in destinos:
                     try:
                         await bot.send_message(
@@ -121,8 +135,9 @@ async def disparar_troca_por_categoria():
                             reply_markup=keyboard,
                             disable_web_page_preview=True
                         )
+                        logger.info(f"📤 Lista enviada com sucesso para o canal {dest['chat_id']} ({categoria})")
                     except Exception as e:
-                        logger.error(f"Erro ao enviar lista para o canal {dest['chat_id']}: {e}")
+                        logger.error(f"❌ Erro ao enviar lista para o canal {dest['chat_id']}: {e}")
 
         logger.info("✅ Ciclo de troca de divulgação concluído com sucesso!")
         return True
@@ -233,12 +248,12 @@ async def lifespan(app: FastAPI):
             await message.reply_text("⛔ Acesso negado.")
             return
 
-        await message.reply_text("🚀 Executando disparo de teste das listas de divulgação agora...")
+        await message.reply_text("🚀 Executando disparo de teste das listas em todos os canais...")
         sucesso = await disparar_troca_por_categoria()
         if sucesso:
-            await message.reply_text("✅ Disparo de teste concluído com sucesso! Verifique os canais.")
+            await message.reply_text("✅ Disparo de teste concluído com sucesso em todos os canais ativos!")
         else:
-            await message.reply_text("❌ Ocorreu um erro durante o disparo de teste. Verifique os logs.")
+            await message.reply_text("❌ Falha no disparo ou nenhum canal ativo encontrado.")
 
     @bot.on_callback_query()
     async def callback_handler(client: Client, callback_query):
@@ -289,7 +304,7 @@ async def lifespan(app: FastAPI):
             
             await callback_query.message.edit_text(
                 f"✍️ Categoria selecionada: **{CATEGORIAS_DISPONIVEIS.get(cat_key, cat_key)}**\n\n"
-                f"Agora, envie o **Título** que aparecerá no link fixo (Ex: *Canal Oficial do Projeto*):",
+                f"Agora, envie o **Título** que aparecerá no link fixo (Ex: *Canal Oficial*):",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_painel")]])
             )
 
