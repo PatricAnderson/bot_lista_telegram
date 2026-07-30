@@ -76,8 +76,9 @@ async def disparar_troca_por_categoria():
                     categoria
                 )
 
+                # Puxa links fixos específicos da categoria OU globais ('todas')
                 links_fixos = await conn.fetch(
-                    "SELECT id, titulo, url FROM links_fixos WHERE categoria = $1", 
+                    "SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", 
                     categoria
                 )
 
@@ -88,26 +89,24 @@ async def disparar_troca_por_categoria():
 
                 nome_cat_formatado = CATEGORIAS_DISPONIVEIS.get(categoria, categoria.upper())
                 
-                # Texto limpo de introdução (como na referência)
                 texto_lista = (
                     f"🔥 **MELHORES CANAIS - {nome_cat_formatado}** 🔥\n\n"
                     f"✨ Conteúdos exclusivos, atualizados e sem censura.\n\n"
                     f"👇 *Escolha abaixo e acesse agora!*"
                 )
 
-                # Construção dos botões estilo grade (1 ou 2 por linha)
                 botoes = []
 
-                # 1. Adiciona os VIPs (Linha única por canal ou divididos)
+                # 1. VIPs
                 for v in vips:
                     link = v['invite_link'] or "https://t.me/"
                     botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=link)])
 
-                # 2. Adiciona os Links Fixos
+                # 2. Links Fixos (Específicos da categoria ou globais)
                 for lf in links_fixos:
                     botoes.append([InlineKeyboardButton(f"⭐ {lf['titulo']}", url=lf['url'])])
 
-                # 3. Adiciona os Canais Normais (distribuídos em 2 colunas para ficar igual à imagem)
+                # 3. Normais em grade de 2 colunas
                 linha_dupla = []
                 for n in normais:
                     link = n['invite_link'] or "https://t.me/"
@@ -118,7 +117,7 @@ async def disparar_troca_por_categoria():
                 if linha_dupla:
                     botoes.append(linha_dupla)
 
-                # 4. Botão de rodapé para participar da lista
+                # 4. Botão de rodapé
                 bot_username = bot.me.username
                 botoes.append([
                     InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot_username}?start=start")
@@ -126,7 +125,6 @@ async def disparar_troca_por_categoria():
 
                 keyboard = InlineKeyboardMarkup(botoes)
 
-                # Envia para TODOS os canais ativos desta categoria
                 for dest in destinos:
                     try:
                         await bot.send_message(
@@ -279,7 +277,9 @@ async def lifespan(app: FastAPI):
                 await callback_query.answer("Acesso negado.", show_alert=True)
                 return
             
-            botoes = []
+            botoes = [
+                [InlineKeyboardButton("🌐 TODAS AS CATEGORIAS (Global)", callback_data="admaddcat_todas")]
+            ]
             linha = []
             for cat_key, cat_nome in CATEGORIAS_DISPONIVEIS.items():
                 linha.append(InlineKeyboardButton(cat_nome, callback_data=f"admaddcat_{cat_key}"))
@@ -291,7 +291,7 @@ async def lifespan(app: FastAPI):
             botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
 
             await callback_query.message.edit_text(
-                "➕ **Adicionar Link Fixo**\n\nSelecione em qual **categoria** este link fixo vai aparecer:",
+                "➕ **Adicionar Link Fixo**\n\nSelecione em qual categoria este link fixo vai aparecer (ou escolha **TODAS**):",
                 reply_markup=InlineKeyboardMarkup(botoes)
             )
 
@@ -299,11 +299,12 @@ async def lifespan(app: FastAPI):
             if ADMIN_ID and user_id != ADMIN_ID:
                 await callback_query.answer("Acesso negado.", show_alert=True)
                 return
-            cat_key = data.split("_")[1]
+            cat_key = data.split("_", 1)[1]
             admin_estados[user_id] = {"categoria": cat_key, "etapa": "aguardando_titulo"}
             
+            nome_exibicao = "🌐 Todas as Categorias" if cat_key == "todas" else CATEGORIAS_DISPONIVEIS.get(cat_key, cat_key)
             await callback_query.message.edit_text(
-                f"✍️ Categoria selecionada: **{CATEGORIAS_DISPONIVEIS.get(cat_key, cat_key)}**\n\n"
+                f"✍️ Alvo selecionado: **{nome_exibicao}**\n\n"
                 f"Agora, envie o **Título** que aparecerá no link fixo (Ex: *Canal Oficial*):",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_painel")]])
             )
@@ -326,7 +327,7 @@ async def lifespan(app: FastAPI):
             texto = "📋 **Links Fixos Cadastrados:**\n\n"
             botoes = []
             for l in links:
-                cat_nome = CATEGORIAS_DISPONIVEIS.get(l['categoria'], l['categoria'])
+                cat_nome = "🌐 Todas as Categorias" if l['categoria'] == 'todas' else CATEGORIAS_DISPONIVEIS.get(l['categoria'], l['categoria'])
                 texto += f"• **{l['titulo']}** ({cat_nome})\n  └ `{l['url']}`\n\n"
                 botoes.append([InlineKeyboardButton(f"🗑️ Remover: {l['titulo'][:25]}", callback_data=f"admdel_{l['id']}")])
 
@@ -573,13 +574,14 @@ async def lifespan(app: FastAPI):
 
             del admin_estados[user_id]
             
+            nome_cat_exibicao = "🌐 Todas as Categorias" if categoria == "todas" else CATEGORIAS_DISPONIVEIS.get(categoria, categoria)
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Adicionar Outro Link", callback_data="admin_addlink")],
                 [InlineKeyboardButton("🛠️ Voltar ao Painel Admin", callback_data="admin_painel")]
             ])
             await message.reply_text(
                 f"🎉 **Link Fixo cadastrado com sucesso!**\n\n"
-                f"📌 Categoria: {CATEGORIAS_DISPONIVEIS.get(categoria, categoria)}\n"
+                f"📌 Alvo: {nome_cat_exibicao}\n"
                 f"📝 Título: {titulo}\n"
                 f"🔗 URL: {url}",
                 reply_markup=keyboard
