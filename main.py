@@ -135,7 +135,6 @@ async def lifespan(app: FastAPI):
     db_pool = await asyncpg.create_pool(DATABASE_URL)
     logger.info("📦 Pool do PostgreSQL iniciado.")
     
-    # Criação e atualização segura das tabelas e colunas
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("""
@@ -192,22 +191,144 @@ async def lifespan(app: FastAPI):
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link_adicao)],
+            [InlineKeyboardButton("📢 Meus Canais Cadastrados", callback_data="meus_canais")],
             [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
         ])
         await message.reply_text(
             "👋 **Bem-vindo ao UP CANAIS!**\n\n"
-            "Para cadastrar seu canal na rede de troca de divulgações, clique no botão abaixo e adicione-me como **Administrador** no seu canal:\n\n"
-            "*(Após adicionar, eu te enviarei uma mensagem aqui para você escolher a categoria do seu canal).*",
+            "Gerencie seus canais na rede de troca de divulgações através dos botões abaixo:\n\n"
+            "*(Para cadastrar um novo canal, adicione-me como administrador nele).* ",
             reply_markup=keyboard
         )
 
     @bot.on_callback_query()
     async def callback_handler(client: Client, callback_query):
         data = callback_query.data
+        user_id = callback_query.from_user.id
         
         if data == "conta":
             await callback_query.answer("Sua conta está ativa na nossa rede!", show_alert=True)
+
+        elif data == "meus_canais" or data.startswith("pagcanais_"):
+            offset = 0
+            if data.startswith("pagcanais_"):
+                offset = int(data.split("_")[1])
+
+            async with db_pool.acquire() as conn:
+                canais = await conn.fetch(
+                    "SELECT chat_id, titulo, categoria, membros FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET $2",
+                    user_id, offset
+                )
+                total_row = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1 AND ativo = TRUE", user_id)
+
+            if not canais:
+                await callback_query.message.edit_text(
+                    "📂 Você não possui nenhum canal cadastrado ativo no momento.\n\n"
+                    "Adicione o bot como Administrador em um canal para começar!",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_inicio")]])
+                )
+                return
+
+            texto = f"📢 **Seus Canais Cadastrados** (Total: {total_row}):\n\n"
+            botoes = []
+
+            for canal in canais:
+                cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
+                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome} | Membros: {canal['membros']}\n\n"
+                
+                # Botões de gerenciamento para cada canal específico
+                botoes.append([
+                    InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
+                ])
+
+            # Paginação e Voltar
+            botoes_nav = []
+            if offset > 0:
+                botoes_nav.append(InlineKeyboardButton("⬅️ Anterior", callback_data=f"pagcanais_{offset - 5}"))
+            if offset + 5 < total_row:
+                botoes_nav.append(InlineKeyboardButton("Próxima ➡️", callback_data=f"pagcanais_{offset + 5}"))
             
+            if botoes_nav:
+                botoes.append(botoes_nav)
+
+            botoes.append([InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")])
+
+            await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
+
+        elif data.startswith("gerenciar_"):
+            chat_id = int(data.split("_")[1])
+            async with db_pool.acquire() as conn:
+                canal = await conn.fetchrow("SELECT * FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
+
+            if not canal:
+                await callback_query.answer("Canal não encontrado ou sem permissão.", show_alert=True)
+                return
+
+            cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
+            texto = (
+                f"⚙️ **Gerenciando Canal:** {canal['titulo']}\n\n"
+                f"📁 Categoria: {cat_nome}\n"
+                f"👥 Membros: {canal['membros']}\n"
+                f"🔗 Link Atual: `{canal['invite_link'] or 'Nenhum'}`\n\n"
+                f"Escolha o que deseja fazer:"
+            )
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Atualizar Nome e Link", callback_data=f"atualizar_{chat_id}")],
+                [InlineKeyboardButton("🗑️ Remover Canal", callback_data=f"remover_{chat_id}")],
+                [InlineKeyboardButton("⬅️ Voltar aos Meus Canais", callback_data="meus_canais")]
+            ])
+            await callback_query.message.edit_text(texto, reply_markup=keyboard)
+
+        elif data.startswith("atualizar_"):
+            chat_id = int(data.split("_")[1])
+            try:
+                chat_info = await client.get_chat(chat_id)
+                novo_titulo = chat_info.title
+                novo_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
+                novos_membros = getattr(chat_info, "members_count", 0)
+
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE canais SET titulo = $1, invite_link = $2, membros = $3 WHERE chat_id = $4",
+                        novo_titulo, novo_link, novos_membros, chat_id
+                    )
+
+                await callback_query.answer("✅ Informações atualizadas com sucesso a partir do Telegram!", show_alert=True)
+                
+                # Retorna para o painel de gerenciamento do canal
+                callback_query.data = f"gerenciar_{chat_id}"
+                return await callback_handler(client, callback_query)
+
+            except Exception as e:
+                logger.error(f"Erro ao atualizar canal {chat_id}: {e}")
+                await callback_query.answer("❌ Erro ao buscar dados do canal. Verifique se o bot ainda é administrador.", show_alert=True)
+
+        elif data.startswith("remover_"):
+            chat_id = int(data.split("_")[1])
+            async with db_pool.acquire() as conn:
+                await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
+
+            await callback_query.answer("🗑️ Canal removido da rede de divulgação com sucesso!", show_alert=True)
+            
+            # Retorna para a lista de canais
+            callback_query.data = "meus_canais"
+            return await callback_handler(client, callback_query)
+
+        elif data == "voltar_inicio":
+            b_username = client.me.username
+            link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link_adicao)],
+                [InlineKeyboardButton("📢 Meus Canais Cadastrados", callback_data="meus_canais")],
+                [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
+            ])
+            await callback_query.message.edit_text(
+                "👋 **Painel Principal - UP CANAIS**\n\n"
+                "Gerencie seus canais na rede de troca de divulgações através dos botões abaixo:",
+                reply_markup=keyboard
+            )
+
         elif data.startswith("setcat_"):
             partes = data.split("_", 2)
             if len(partes) == 3:
@@ -221,10 +342,17 @@ async def lifespan(app: FastAPI):
                     )
                 
                 nome_cat = CATEGORIAS_DISPONIVEIS.get(categoria, categoria)
+                b_username = client.me.username
+                link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📢 Ver Meus Canais", callback_data="meus_canais")],
+                    [InlineKeyboardButton("➕ Adicionar Outro Canal", url=link_adicao)]
+                ])
                 await callback_query.message.edit_text(
                     f"🎉 **Canal configurado com sucesso!**\n\n"
                     f"📁 Categoria definida: **{nome_cat}**\n"
-                    f"Seu canal já está participando das trocas automáticas de divulgação!"
+                    f"Seu canal já está participando das trocas automáticas de divulgação!",
+                    reply_markup=keyboard
                 )
 
     @bot.on_chat_member_updated()
