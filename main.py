@@ -236,12 +236,10 @@ async def lifespan(app: FastAPI):
                 cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
                 texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome} | Membros: {canal['membros']}\n\n"
                 
-                # Botões de gerenciamento para cada canal específico
                 botoes.append([
                     InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
                 ])
 
-            # Paginação e Voltar
             botoes_nav = []
             if offset > 0:
                 botoes_nav.append(InlineKeyboardButton("⬅️ Anterior", callback_data=f"pagcanais_{offset - 5}"))
@@ -296,13 +294,12 @@ async def lifespan(app: FastAPI):
 
                 await callback_query.answer("✅ Informações atualizadas com sucesso a partir do Telegram!", show_alert=True)
                 
-                # Retorna para o painel de gerenciamento do canal
-                callback_query.data = f"gerenciar_{chat_id}"
-                return await callback_handler(client, callback_query)
-
             except Exception as e:
                 logger.error(f"Erro ao atualizar canal {chat_id}: {e}")
-                await callback_query.answer("❌ Erro ao buscar dados do canal. Verifique se o bot ainda é administrador.", show_alert=True)
+                await callback_query.answer("⚠️ Não foi possível sincronizar agora. Verifique se o bot continua como admin.", show_alert=True)
+
+            callback_query.data = f"gerenciar_{chat_id}"
+            return await callback_handler(client, callback_query)
 
         elif data.startswith("remover_"):
             chat_id = int(data.split("_")[1])
@@ -311,7 +308,6 @@ async def lifespan(app: FastAPI):
 
             await callback_query.answer("🗑️ Canal removido da rede de divulgação com sucesso!", show_alert=True)
             
-            # Retorna para a lista de canais
             callback_query.data = "meus_canais"
             return await callback_handler(client, callback_query)
 
