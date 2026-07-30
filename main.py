@@ -23,11 +23,15 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))  # Seu ID numérico do Telegram do Admin
 
 # Variáveis globais
 db_pool = None
 bot = None
 scheduler = AsyncIOScheduler()
+
+# Estado temporário para criação de links fixos via chat: {user_id: {"categoria": "...", "etapa": "titulo/url"}}
+admin_estados = {}
 
 # ==========================================
 # 3. LISTA DE CATEGORIAS DISPONÍVEIS
@@ -71,7 +75,7 @@ async def disparar_troca_por_categoria():
                 )
 
                 links_fixos = await conn.fetch(
-                    "SELECT titulo, url FROM links_fixos WHERE categoria = $1", 
+                    "SELECT id, titulo, url FROM links_fixos WHERE categoria = $1", 
                     categoria
                 )
 
@@ -189,17 +193,37 @@ async def lifespan(app: FastAPI):
         b_username = client.me.username
         link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
 
-        keyboard = InlineKeyboardMarkup([
+        keyboard_rows = [
             [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link_adicao)],
             [InlineKeyboardButton("📢 Meus Canais Cadastrados", callback_data="meus_canais")],
             [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
-        ])
+        ]
+        
+        # Se for o administrador, adiciona o botão de painel admin no /start
+        if ADMIN_ID and user_id == ADMIN_ID:
+            keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin (Links Fixos)", callback_data="admin_painel")])
+
+        keyboard = InlineKeyboardMarkup(keyboard_rows)
         await message.reply_text(
             "👋 **Bem-vindo ao UP CANAIS!**\n\n"
             "Gerencie seus canais na rede de troca de divulgações através dos botões abaixo:\n\n"
             "*(Para cadastrar um novo canal, adicione-me como administrador nele).* ",
             reply_markup=keyboard
         )
+
+    @bot.on_message(filters.command("admin") & filters.private)
+    async def admin_command(client: Client, message):
+        user_id = message.from_user.id
+        if ADMIN_ID and user_id != ADMIN_ID:
+            await message.reply_text("⛔ Acesso negado.")
+            return
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink")],
+            [InlineKeyboardButton("📋 Listar / Remover Links Fixos", callback_data="admin_listlinks")],
+            [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
+        ])
+        await message.reply_text("🛠️ **Painel de Administração - Links Fixos**\n\nEscolha uma opção:", reply_markup=keyboard)
 
     @bot.on_callback_query()
     async def callback_handler(client: Client, callback_query):
@@ -208,6 +232,89 @@ async def lifespan(app: FastAPI):
         
         if data == "conta":
             await callback_query.answer("Sua conta está ativa na nossa rede!", show_alert=True)
+
+        elif data == "admin_painel":
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink")],
+                [InlineKeyboardButton("📋 Listar / Remover Links Fixos", callback_data="admin_listlinks")],
+                [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
+            ])
+            await callback_query.message.edit_text("🛠️ **Painel de Administração - Links Fixos**\n\nEscolha uma opção:", reply_markup=keyboard)
+
+        elif data == "admin_addlink":
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+            
+            botoes = []
+            linha = []
+            for cat_key, cat_nome in CATEGORIAS_DISPONIVEIS.items():
+                linha.append(InlineKeyboardButton(cat_nome, callback_data=f"admaddcat_{cat_key}"))
+                if len(linha) == 2:
+                    botoes.append(linha)
+                    linha = []
+            if linha:
+                botoes.append(linha)
+            botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
+
+            await callback_query.message.edit_text(
+                "➕ **Adicionar Link Fixo**\n\nSelecione em qual **categoria** este link fixo vai aparecer:",
+                reply_markup=InlineKeyboardMarkup(botoes)
+            )
+
+        elif data.startswith("admaddcat_"):
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+            cat_key = data.split("_")[1]
+            admin_estados[user_id] = {"categoria": cat_key, "etapa": "aguardando_titulo"}
+            
+            await callback_query.message.edit_text(
+                f"✍️ Categoria selecionada: **{CATEGORIAS_DISPONIVEIS.get(cat_key, cat_key)}**\n\n"
+                f"Agora, envie o **Título** que aparecerá no link fixo (Ex: *Canal Oficial do Projeto*):",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_painel")]])
+            )
+
+        elif data == "admin_listlinks":
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+            
+            async with db_pool.acquire() as conn:
+                links = await conn.fetch("SELECT id, titulo, url, categoria FROM links_fixos ORDER BY categoria")
+
+            if not links:
+                await callback_query.message.edit_text(
+                    "📂 Nenhum link fixo cadastrado no momento.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel")]])
+                )
+                return
+
+            texto = "📋 **Links Fixos Cadastrados:**\n\n"
+            botoes = []
+            for l in links:
+                cat_nome = CATEGORIAS_DISPONIVEIS.get(l['categoria'], l['categoria'])
+                texto += f"• **{l['titulo']}** ({cat_nome})\n  └ `{l['url']}`\n\n"
+                botoes.append([InlineKeyboardButton(f"🗑️ Remover: {l['titulo'][:25]}", callback_data=f"admdel_{l['id']}")])
+
+            botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
+            await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
+
+        elif data.startswith("admdel_"):
+            if ADMIN_ID and user_id != ADMIN_ID:
+                await callback_query.answer("Acesso negado.", show_alert=True)
+                return
+            link_id = int(data.split("_")[1])
+            async with db_pool.acquire() as conn:
+                await conn.execute("DELETE FROM links_fixos WHERE id = $1", link_id)
+            
+            await callback_query.answer("🗑️ Link fixo removido com sucesso!", show_alert=True)
+            # Recarrega a lista
+            callback_query.data = "admin_listlinks"
+            return await callback_handler(client, callback_query)
 
         elif data == "meus_canais" or data.startswith("pagcanais_"):
             offset = 0
@@ -235,7 +342,6 @@ async def lifespan(app: FastAPI):
             for canal in canais:
                 cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
                 texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome} | Membros: {canal['membros']}\n\n"
-                
                 botoes.append([
                     InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
                 ])
@@ -355,13 +461,21 @@ async def lifespan(app: FastAPI):
             await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
 
         elif data == "voltar_inicio":
+            if user_id in admin_estados:
+                del admin_estados[user_id]
+
             b_username = client.me.username
             link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
-            keyboard = InlineKeyboardMarkup([
+            
+            keyboard_rows = [
                 [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link_adicao)],
                 [InlineKeyboardButton("📢 Meus Canais Cadastrados", callback_data="meus_canais")],
                 [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
-            ])
+            ]
+            if ADMIN_ID and user_id == ADMIN_ID:
+                keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin (Links Fixos)", callback_data="admin_painel")])
+
+            keyboard = InlineKeyboardMarkup(keyboard_rows)
             try:
                 await callback_query.message.edit_text(
                     "👋 **Painel Principal - UP CANAIS**\n\n"
@@ -397,6 +511,51 @@ async def lifespan(app: FastAPI):
                     f"Seu canal já está participando das trocas automáticas de divulgação!",
                     reply_markup=keyboard
                 )
+
+    # Captura de texto do Admin para criar os links fixos interativamente
+    @bot.on_message(filters.private & ~filters.command(["start", "admin"]))
+    async def capturar_texto_admin(client: Client, message):
+        user_id = message.from_user.id
+        if not ADMIN_ID or user_id != ADMIN_ID:
+            return
+
+        if user_id not in admin_estados:
+            return
+
+        estado = admin_estados[user_id]
+        texto = message.text.strip()
+
+        if estado["etapa"] == "aguardando_titulo":
+            estado["titulo"] = texto
+            estado["etapa"] = "aguardando_url"
+            await message.reply_text(
+                f"✅ Título salvo: **{texto}**\n\n"
+                f"Agora, envie a **URL / Link de destino** (Ex: `https://t.me/seu_grupo`):"
+            )
+        elif estado["etapa"] == "aguardando_url":
+            categoria = estado["categoria"]
+            titulo = estado["titulo"]
+            url = texto
+
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO links_fixos (titulo, url, categoria) VALUES ($1, $2, $3)",
+                    titulo, url, categoria
+                )
+
+            del admin_estados[user_id]
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Adicionar Outro Link", callback_data="admin_addlink")],
+                [InlineKeyboardButton("🛠️ Voltar ao Painel Admin", callback_data="admin_painel")]
+            ])
+            await message.reply_text(
+                f"🎉 **Link Fixo cadastrado com sucesso!**\n\n"
+                f"📌 Categoria: {CATEGORIAS_DISPONIVEIS.get(categoria, categoria)}\n"
+                f"📝 Título: {titulo}\n"
+                f"🔗 URL: {url}",
+                reply_markup=keyboard
+            )
 
     @bot.on_chat_member_updated()
     async def bot_added_to_channel(client: Client, update: ChatMemberUpdated):
