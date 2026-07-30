@@ -294,12 +294,32 @@ async def lifespan(app: FastAPI):
 
                 await callback_query.answer("✅ Informações atualizadas com sucesso a partir do Telegram!", show_alert=True)
                 
+                async with db_pool.acquire() as conn:
+                    canal = await conn.fetchrow("SELECT * FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
+
+                if canal:
+                    cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
+                    texto = (
+                        f"⚙️ **Gerenciando Canal:** {canal['titulo']}\n\n"
+                        f"📁 Categoria: {cat_nome}\n"
+                        f"👥 Membros: {canal['membros']}\n"
+                        f"🔗 Link Atual: `{canal['invite_link'] or 'Nenhum'}`\n\n"
+                        f"Escolha o que deseja fazer:"
+                    )
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Atualizar Nome e Link", callback_data=f"atualizar_{chat_id}")],
+                        [InlineKeyboardButton("🗑️ Remover Canal", callback_data=f"remover_{chat_id}")],
+                        [InlineKeyboardButton("⬅️ Voltar aos Meus Canais", callback_data="meus_canais")]
+                    ])
+                    try:
+                        await callback_query.message.edit_text(texto, reply_markup=keyboard)
+                    except Exception as ex:
+                        if "MESSAGE_NOT_MODIFIED" not in str(ex):
+                            raise ex
+
             except Exception as e:
                 logger.error(f"Erro ao atualizar canal {chat_id}: {e}")
-                await callback_query.answer("⚠️ Não foi possível sincronizar agora. Verifique se o bot continua como admin.", show_alert=True)
-
-            callback_query.data = f"gerenciar_{chat_id}"
-            return await callback_handler(client, callback_query)
+                await callback_query.answer("⚠️ As informações já estão atualizadas ou o bot precisa ser admin.", show_alert=True)
 
         elif data.startswith("remover_"):
             chat_id = int(data.split("_")[1])
@@ -308,8 +328,31 @@ async def lifespan(app: FastAPI):
 
             await callback_query.answer("🗑️ Canal removido da rede de divulgação com sucesso!", show_alert=True)
             
-            callback_query.data = "meus_canais"
-            return await callback_handler(client, callback_query)
+            async with db_pool.acquire() as conn:
+                canais = await conn.fetch(
+                    "SELECT chat_id, titulo, categoria, membros FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET 0",
+                    user_id
+                )
+                total_row = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1 AND ativo = TRUE", user_id)
+
+            if not canais:
+                await callback_query.message.edit_text(
+                    "📂 Você não possui nenhum canal cadastrado ativo no momento.\n\n"
+                    "Adicione o bot como Administrador em um canal para começar!",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_inicio")]])
+                )
+                return
+
+            texto = f"📢 **Seus Canais Cadastrados** (Total: {total_row}):\n\n"
+            botoes = []
+            for canal in canais:
+                cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
+                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome} | Membros: {canal['membros']}\n\n"
+                botoes.append([
+                    InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
+                ])
+            botoes.append([InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")])
+            await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
 
         elif data == "voltar_inicio":
             b_username = client.me.username
@@ -319,11 +362,15 @@ async def lifespan(app: FastAPI):
                 [InlineKeyboardButton("📢 Meus Canais Cadastrados", callback_data="meus_canais")],
                 [InlineKeyboardButton("👤 Minha Conta", callback_data="conta")]
             ])
-            await callback_query.message.edit_text(
-                "👋 **Painel Principal - UP CANAIS**\n\n"
-                "Gerencie seus canais na rede de troca de divulgações através dos botões abaixo:",
-                reply_markup=keyboard
-            )
+            try:
+                await callback_query.message.edit_text(
+                    "👋 **Painel Principal - UP CANAIS**\n\n"
+                    "Gerencie seus canais na rede de troca de divulgações através dos botões abaixo:",
+                    reply_markup=keyboard
+                )
+            except Exception as ex:
+                if "MESSAGE_NOT_MODIFIED" not in str(ex):
+                    raise ex
 
         elif data.startswith("setcat_"):
             partes = data.split("_", 2)
