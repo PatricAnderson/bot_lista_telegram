@@ -6,9 +6,10 @@ from fastapi import FastAPI
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from zoneinfo import ZoneInfo  # Importante para corrigir o fuso horário
+from zoneinfo import ZoneInfo
 
 # ==========================================
 # 1. CONFIGURAÇÃO DE LOGS
@@ -49,8 +50,10 @@ CATEGORIAS_DISPONIVEIS = {
 }
 
 # ==========================================
-# 4. FUNÇÃO DE DISPARO DA TROCA DE DIVULGAÇÃO
+# 4. FUNÇÕES DE AUTOMAÇÃO E VARREDURA
 # ==========================================
+
+# Rotina 1: Disparo Diário das Listas (com Sistema de Strikes)
 async def disparar_troca_por_categoria():
     if not bot:
         logger.error("Bot não inicializado para o disparo.")
@@ -58,39 +61,26 @@ async def disparar_troca_por_categoria():
 
     try:
         async with db_pool.acquire() as conn:
-            # Apenas canais ativos E aprovados participam
             categorias = await conn.fetch("SELECT DISTINCT categoria FROM canais WHERE ativo = TRUE AND aprovado = TRUE AND categoria IS NOT NULL")
 
             if not categorias:
-                logger.info("⚠️ Nenhuma categoria com canais aprovados e ativos encontrada para disparo.")
+                logger.info("⚠️ Nenhuma categoria ativa encontrada para disparo.")
                 return False
 
             for cat_row in categorias:
                 categoria = cat_row['categoria']
 
-                vips = await conn.fetch(
-                    "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE AND aprovado = TRUE LIMIT 4", 
-                    categoria
-                )
-                
-                normais = await conn.fetch(
-                    "SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE ORDER BY RANDOM() LIMIT 14", 
-                    categoria
-                )
+                vips = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE AND aprovado = TRUE LIMIT 4", categoria)
+                normais = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE ORDER BY RANDOM() LIMIT 14", categoria)
+                links_fixos = await conn.fetch("SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", categoria)
 
-                links_fixos = await conn.fetch(
-                    "SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", 
-                    categoria
-                )
-
-                # Busca também a última mensagem enviada para poder deletar
-                destinos = await conn.fetch("SELECT chat_id, ultima_mensagem_id FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE", categoria)
+                # Agora buscamos dono_id e titulo para poder notificar em caso de Strike
+                destinos = await conn.fetch("SELECT chat_id, ultima_mensagem_id, dono_id, titulo FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE", categoria)
 
                 if not destinos:
                     continue
 
                 nome_cat_formatado = CATEGORIAS_DISPONIVEIS.get(categoria, categoria.upper())
-                
                 texto_lista = (
                     f"🔥 **MELHORES CANAIS - {nome_cat_formatado}** 🔥\n\n"
                     f"✨ Conteúdos exclusivos, atualizados e sem censura.\n\n"
@@ -98,62 +88,115 @@ async def disparar_troca_por_categoria():
                 )
 
                 botoes = []
-
                 for v in vips:
-                    link = v['invite_link'] or "https://t.me/"
-                    botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=link)])
-
+                    botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=v['invite_link'] or "https://t.me/")])
                 for lf in links_fixos:
                     botoes.append([InlineKeyboardButton(f"⭐ {lf['titulo']}", url=lf['url'])])
 
                 linha_dupla = []
                 for n in normais:
-                    link = n['invite_link'] or "https://t.me/"
-                    linha_dupla.append(InlineKeyboardButton(f"🚀 {n['titulo']}", url=link))
+                    linha_dupla.append(InlineKeyboardButton(f"🚀 {n['titulo']}", url=n['invite_link'] or "https://t.me/"))
                     if len(linha_dupla) == 2:
                         botoes.append(linha_dupla)
                         linha_dupla = []
                 if linha_dupla:
                     botoes.append(linha_dupla)
 
-                bot_username = bot.me.username
-                botoes.append([
-                    InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot_username}?start=start")
-                ])
-
+                botoes.append([InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot.me.username}?start=start")])
                 keyboard = InlineKeyboardMarkup(botoes)
 
                 for dest in destinos:
                     chat_id = dest['chat_id']
                     ultima_msg_id = dest['ultima_mensagem_id']
+                    dono_id = dest['dono_id']
+                    titulo_canal = dest['titulo']
 
-                    # 1. Apaga a lista anterior (se existir)
-                    if ultima_msg_id:
-                        try:
-                            await bot.delete_messages(chat_id=chat_id, message_ids=ultima_msg_id)
-                        except Exception as e:
-                            logger.warning(f"Aviso: Não foi possível apagar mensagem antiga {ultima_msg_id} no canal {chat_id}: {e}")
-
-                    # 2. Envia a lista nova
                     try:
+                        # Tenta apagar a lista anterior
+                        if ultima_msg_id:
+                            try:
+                                await bot.delete_messages(chat_id=chat_id, message_ids=ultima_msg_id)
+                            except Exception:
+                                pass
+
+                        # Envia a nova lista
                         nova_msg = await bot.send_message(
                             chat_id=chat_id,
                             text=texto_lista,
                             reply_markup=keyboard,
                             disable_web_page_preview=True
                         )
-                        # 3. Salva o ID da nova lista no banco de dados
                         await conn.execute("UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2", nova_msg.id, chat_id)
-                        logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id} ({categoria})")
+                        logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id}")
+
+                    # SISTEMA DE STRIKE: Se o bot perdeu permissão ou foi expulso
+                    except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel) as e:
+                        logger.warning(f"🚫 Strike! Sem permissão no canal {chat_id}. Pausando canal.")
+                        await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
+                        try:
+                            await bot.send_message(
+                                dono_id,
+                                f"⚠️ **Aviso de Desligamento Automático!**\n\n"
+                                f"Fui impedido de enviar a lista no seu canal **{titulo_canal}**. Isso geralmente acontece se eu for removido dos administradores ou banido.\n\n"
+                                f"Seu canal foi **pausado** da rede. Para voltar, adicione o bot novamente como Administrador com todas as permissões e clique em 'Atualizar Nome e Link' no seu painel."
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         logger.error(f"❌ Erro ao enviar lista para o canal {chat_id}: {e}")
 
         logger.info("✅ Ciclo de troca de divulgação concluído com sucesso!")
         return True
-
     except Exception as e:
         logger.error(f"❌ Erro no agendador de listas: {e}")
         return False
+
+
+# Rotina 2: Varredura Semanal de Membros (Validação da Regra de 500+)
+async def monitorar_membros_semanal():
+    if not bot:
+        return
+    logger.info("🔍 Iniciando varredura semanal de quantidade de membros...")
+    try:
+        async with db_pool.acquire() as conn:
+            canais_ativos = await conn.fetch("SELECT chat_id, titulo, dono_id FROM canais WHERE ativo = TRUE AND aprovado = TRUE")
+            
+            for c in canais_ativos:
+                chat_id = c['chat_id']
+                dono_id = c['dono_id']
+                titulo = c['titulo']
+
+                try:
+                    chat_info = await bot.get_chat(chat_id)
+                    membros_atuais = getattr(chat_info, "members_count", 0)
+
+                    # Atualiza o novo número de membros no banco de dados para os status sempre baterem
+                    await conn.execute("UPDATE canais SET membros = $1 WHERE chat_id = $2", membros_atuais, chat_id)
+
+                    # Se caiu para menos de 500, aplica a suspensão
+                    if 0 < membros_atuais < 500:
+                        await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
+                        logger.info(f"📉 Canal {chat_id} pausado por queda de membros ({membros_atuais}).")
+                        try:
+                            await bot.send_message(
+                                dono_id,
+                                f"📉 **Alerta de Queda de Membros!**\n\n"
+                                f"Durante nossa varredura semanal, notamos que seu canal **{titulo}** caiu para {membros_atuais} membros.\n"
+                                f"Como nossa regra exige um mínimo de **500 membros**, seu canal foi temporariamente **pausado**.\n\n"
+                                f"Assim que recuperar o engajamento, acesse seu painel e atualize os dados para voltar a participar!"
+                            )
+                        except Exception:
+                            pass
+                            
+                except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel):
+                    # Se não conseguir acessar as infos, aplica o strike também
+                    await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
+                except Exception as e:
+                    logger.error(f"Erro ao consultar canal {chat_id} na varredura: {e}")
+                    
+        logger.info("✅ Varredura semanal de membros concluída!")
+    except Exception as e:
+        logger.error(f"Erro na varredura semanal: {e}")
 
 # ==========================================
 # 5. CICLO DE VIDA DO FASTAPI E BOT
@@ -248,9 +291,9 @@ async def lifespan(app: FastAPI):
             return
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏳ Canais Pendentes de Aprovação", callback_data="admin_pendentes")],
+            [InlineKeyboardButton("⏳ Canais Pendentes", callback_data="admin_pendentes")],
             [InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink")],
-            [InlineKeyboardButton("📋 Listar / Remover Links Fixos", callback_data="admin_listlinks")],
+            [InlineKeyboardButton("📋 Links Fixos Cadastrados", callback_data="admin_listlinks")],
             [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
         ])
         await message.reply_text("🛠️ **Painel de Administração**\n\nEscolha uma opção:", reply_markup=keyboard)
@@ -259,15 +302,14 @@ async def lifespan(app: FastAPI):
     async def testar_comando(client: Client, message):
         user_id = message.from_user.id
         if ADMIN_ID and user_id != ADMIN_ID:
-            await message.reply_text("⛔ Acesso negado.")
             return
 
-        await message.reply_text("🚀 Executando disparo de teste das listas (Apagando as antigas e enviando as novas)...")
+        await message.reply_text("🚀 Executando disparo de teste manual...")
         sucesso = await disparar_troca_por_categoria()
         if sucesso:
             await message.reply_text("✅ Disparo de teste concluído com sucesso!")
         else:
-            await message.reply_text("❌ Falha no disparo ou nenhum canal aprovado/ativo encontrado.")
+            await message.reply_text("❌ Falha no disparo.")
 
     @bot.on_callback_query()
     async def callback_handler(client: Client, callback_query):
@@ -282,26 +324,21 @@ async def lifespan(app: FastAPI):
                 await callback_query.answer("Acesso negado.", show_alert=True)
                 return
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏳ Canais Pendentes de Aprovação", callback_data="admin_pendentes")],
+                [InlineKeyboardButton("⏳ Canais Pendentes", callback_data="admin_pendentes")],
                 [InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink")],
-                [InlineKeyboardButton("📋 Listar / Remover Links Fixos", callback_data="admin_listlinks")],
+                [InlineKeyboardButton("📋 Links Fixos Cadastrados", callback_data="admin_listlinks")],
                 [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
             ])
             await callback_query.message.edit_text("🛠️ **Painel de Administração**\n\nEscolha uma opção:", reply_markup=keyboard)
 
         elif data == "admin_pendentes":
             if ADMIN_ID and user_id != ADMIN_ID:
-                await callback_query.answer("Acesso negado.", show_alert=True)
                 return
-
             async with db_pool.acquire() as conn:
                 pendentes = await conn.fetch("SELECT chat_id, titulo, categoria, membros, dono_id FROM canais WHERE aprovado = FALSE AND ativo = TRUE")
 
             if not pendentes:
-                await callback_query.message.edit_text(
-                    "🎉 Não há nenhum canal pendente de aprovação no momento!",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")]])
-                )
+                await callback_query.message.edit_text("🎉 Não há nenhum canal pendente de aprovação!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")]]))
                 return
 
             texto = "⏳ **Canais Aguardando Aprovação:**\n\n"
@@ -313,127 +350,75 @@ async def lifespan(app: FastAPI):
                     InlineKeyboardButton(f"✅ Aprovar: {p['titulo'][:15]}", callback_data=f"aprovar_{p['chat_id']}"),
                     InlineKeyboardButton(f"❌ Rejeitar", callback_data=f"rejeitar_{p['chat_id']}")
                 ])
-
             botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
             await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
 
         elif data.startswith("aprovar_"):
-            if ADMIN_ID and user_id != ADMIN_ID:
-                await callback_query.answer("Acesso negado.", show_alert=True)
-                return
+            if ADMIN_ID and user_id != ADMIN_ID: return
             chat_id = int(data.split("_")[1])
-
             async with db_pool.acquire() as conn:
-                canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE WHERE chat_id = $1 RETURNING titulo, dono_id", chat_id)
-
-            await callback_query.answer("✅ Canal aprovado com sucesso!", show_alert=True)
-
+                canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE, ativo = TRUE WHERE chat_id = $1 RETURNING titulo, dono_id", chat_id)
+            await callback_query.answer("✅ Canal aprovado!", show_alert=True)
             if canal and canal['dono_id']:
-                try:
-                    await client.send_message(
-                        chat_id=canal['dono_id'],
-                        text=f"🎉 Parabéns! Seu canal **{canal['titulo']}** foi **aprovado** pelo administrador e já está participando da rede de divulgação!"
-                    )
-                except:
-                    pass
-
+                try: await client.send_message(canal['dono_id'], f"🎉 Parabéns! Seu canal **{canal['titulo']}** foi **aprovado** na rede UP CANAIS!")
+                except: pass
             callback_query.data = "admin_pendentes"
             return await callback_handler(client, callback_query)
 
         elif data.startswith("rejeitar_"):
-            if ADMIN_ID and user_id != ADMIN_ID:
-                await callback_query.answer("Acesso negado.", show_alert=True)
-                return
+            if ADMIN_ID and user_id != ADMIN_ID: return
             chat_id = int(data.split("_")[1])
-
             async with db_pool.acquire() as conn:
                 canal = await conn.fetchrow("UPDATE canais SET ativo = FALSE WHERE chat_id = $1 RETURNING titulo, dono_id", chat_id)
-
-            await callback_query.answer("❌ Canal rejeitado/removido.", show_alert=True)
-
+            await callback_query.answer("❌ Canal rejeitado.", show_alert=True)
             if canal and canal['dono_id']:
-                try:
-                    await client.send_message(
-                        chat_id=canal['dono_id'],
-                        text=f"❌ Infelizmente, o cadastro do seu canal **{canal['titulo']}** foi rejeitado pelo administrador."
-                    )
-                except:
-                    pass
-
+                try: await client.send_message(canal['dono_id'], f"❌ Infelizmente, o cadastro do canal **{canal['titulo']}** foi rejeitado pelo administrador.")
+                except: pass
             callback_query.data = "admin_pendentes"
             return await callback_handler(client, callback_query)
 
         elif data == "admin_addlink":
-            if ADMIN_ID and user_id != ADMIN_ID:
-                await callback_query.answer("Acesso negado.", show_alert=True)
-                return
-            
-            botoes = [
-                [InlineKeyboardButton("🌐 TODAS AS CATEGORIAS (Global)", callback_data="admaddcat_todas")]
-            ]
+            if ADMIN_ID and user_id != ADMIN_ID: return
+            botoes = [[InlineKeyboardButton("🌐 TODAS AS CATEGORIAS (Global)", callback_data="admaddcat_todas")]]
             linha = []
             for cat_key, cat_nome in CATEGORIAS_DISPONIVEIS.items():
                 linha.append(InlineKeyboardButton(cat_nome, callback_data=f"admaddcat_{cat_key}"))
                 if len(linha) == 2:
                     botoes.append(linha)
                     linha = []
-            if linha:
-                botoes.append(linha)
+            if linha: botoes.append(linha)
             botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
-
-            await callback_query.message.edit_text(
-                "➕ **Adicionar Link Fixo**\n\nSelecione em qual categoria este link fixo vai aparecer:",
-                reply_markup=InlineKeyboardMarkup(botoes)
-            )
+            await callback_query.message.edit_text("➕ **Adicionar Link Fixo**\n\nSelecione a categoria alvo:", reply_markup=InlineKeyboardMarkup(botoes))
 
         elif data.startswith("admaddcat_"):
-            if ADMIN_ID and user_id != ADMIN_ID:
-                await callback_query.answer("Acesso negado.", show_alert=True)
-                return
+            if ADMIN_ID and user_id != ADMIN_ID: return
             cat_key = data.split("_", 1)[1]
             admin_estados[user_id] = {"categoria": cat_key, "etapa": "aguardando_titulo"}
-            
             nome_exibicao = "🌐 Todas as Categorias" if cat_key == "todas" else CATEGORIAS_DISPONIVEIS.get(cat_key, cat_key)
-            await callback_query.message.edit_text(
-                f"✍️ Alvo selecionado: **{nome_exibicao}**\n\n"
-                f"Agora, envie o **Título** que aparecerá no link fixo:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_painel")]])
-            )
+            await callback_query.message.edit_text(f"✍️ Alvo: **{nome_exibicao}**\n\nEnvie o **Título** do link fixo:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_painel")]]))
 
         elif data == "admin_listlinks":
-            if ADMIN_ID and user_id != ADMIN_ID:
-                await callback_query.answer("Acesso negado.", show_alert=True)
-                return
-            
+            if ADMIN_ID and user_id != ADMIN_ID: return
             async with db_pool.acquire() as conn:
                 links = await conn.fetch("SELECT id, titulo, url, categoria FROM links_fixos ORDER BY categoria")
-
             if not links:
-                await callback_query.message.edit_text(
-                    "📂 Nenhum link fixo cadastrado no momento.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel")]])
-                )
+                await callback_query.message.edit_text("📂 Nenhum link fixo cadastrado.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel")]]))
                 return
-
             texto = "📋 **Links Fixos Cadastrados:**\n\n"
             botoes = []
             for l in links:
-                cat_nome = "🌐 Todas as Categorias" if l['categoria'] == 'todas' else CATEGORIAS_DISPONIVEIS.get(l['categoria'], l['categoria'])
+                cat_nome = "🌐 Todas" if l['categoria'] == 'todas' else CATEGORIAS_DISPONIVEIS.get(l['categoria'], l['categoria'])
                 texto += f"• **{l['titulo']}** ({cat_nome})\n  └ `{l['url']}`\n\n"
                 botoes.append([InlineKeyboardButton(f"🗑️ Remover: {l['titulo'][:25]}", callback_data=f"admdel_{l['id']}")])
-
             botoes.append([InlineKeyboardButton("⬅️ Voltar ao Painel", callback_data="admin_painel")])
             await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
 
         elif data.startswith("admdel_"):
-            if ADMIN_ID and user_id != ADMIN_ID:
-                await callback_query.answer("Acesso negado.", show_alert=True)
-                return
+            if ADMIN_ID and user_id != ADMIN_ID: return
             link_id = int(data.split("_")[1])
             async with db_pool.acquire() as conn:
                 await conn.execute("DELETE FROM links_fixos WHERE id = $1", link_id)
-            
-            await callback_query.answer("🗑️ Link fixo removido com sucesso!", show_alert=True)
+            await callback_query.answer("🗑️ Link removido!", show_alert=True)
             callback_query.data = "admin_listlinks"
             return await callback_handler(client, callback_query)
 
@@ -441,70 +426,55 @@ async def lifespan(app: FastAPI):
             offset = 0
             if data.startswith("pagcanais_"):
                 offset = int(data.split("_")[1])
-
             async with db_pool.acquire() as conn:
-                canais = await conn.fetch(
-                    "SELECT chat_id, titulo, categoria, membros, aprovado FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET $2",
-                    user_id, offset
-                )
-                total_row = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1 AND ativo = TRUE", user_id)
+                canais = await conn.fetch("SELECT chat_id, titulo, categoria, membros, aprovado, ativo FROM canais WHERE dono_id = $1 LIMIT 5 OFFSET $2", user_id, offset)
+                total_row = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1", user_id)
 
             if not canais:
-                await callback_query.message.edit_text(
-                    "📂 Você não possui nenhum canal cadastrado ativo no momento.\n\n"
-                    "Adicione o bot como Administrador em um canal para começar!",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_inicio")]])
-                )
+                await callback_query.message.edit_text("📂 Você não possui canais cadastrados.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_inicio")]]))
                 return
 
             texto = f"📢 **Seus Canais Cadastrados** (Total: {total_row}):\n\n"
             botoes = []
-
             for canal in canais:
                 cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
-                status_aprovacao = "✅ Aprovado" if canal['aprovado'] else "⏳ Pendente de Aprovação"
-                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome}\n  └ Status: {status_aprovacao}\n\n"
+                if not canal['ativo']: status = "❌ Pausado / Removido"
+                elif not canal['aprovado']: status = "⏳ Pendente"
+                else: status = "✅ Ativo e Aprovado"
                 
-                botoes.append([
-                    InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
-                ])
+                texto += f"• **{canal['titulo']}**\n  └ Status: {status}\n\n"
+                botoes.append([InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")])
 
             botoes_nav = []
-            if offset > 0:
-                botoes_nav.append(InlineKeyboardButton("⬅️ Anterior", callback_data=f"pagcanais_{offset - 5}"))
-            if offset + 5 < total_row:
-                botoes_nav.append(InlineKeyboardButton("Próxima ➡️", callback_data=f"pagcanais_{offset + 5}"))
-            
-            if botoes_nav:
-                botoes.append(botoes_nav)
-
+            if offset > 0: botoes_nav.append(InlineKeyboardButton("⬅️ Anterior", callback_data=f"pagcanais_{offset - 5}"))
+            if offset + 5 < total_row: botoes_nav.append(InlineKeyboardButton("Próxima ➡️", callback_data=f"pagcanais_{offset + 5}"))
+            if botoes_nav: botoes.append(botoes_nav)
             botoes.append([InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")])
-
             await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
 
         elif data.startswith("gerenciar_"):
             chat_id = int(data.split("_")[1])
             async with db_pool.acquire() as conn:
                 canal = await conn.fetchrow("SELECT * FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
-
             if not canal:
-                await callback_query.answer("Canal não encontrado ou sem permissão.", show_alert=True)
+                await callback_query.answer("Canal não encontrado.", show_alert=True)
                 return
 
             cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
-            status_aprovacao = "✅ Aprovado" if canal['aprovado'] else "⏳ Pendente de Aprovação"
+            if not canal['ativo']: status = "❌ Pausado / Desativado (Atualize os dados para tentar reativar)"
+            elif not canal['aprovado']: status = "⏳ Pendente de Aprovação"
+            else: status = "✅ Ativo e Aprovado"
+
             texto = (
-                f"⚙️ **Gerenciando Canal:** {canal['titulo']}\n\n"
+                f"⚙️ **Gerenciando:** {canal['titulo']}\n\n"
                 f"📁 Categoria: {cat_nome}\n"
                 f"👥 Membros: {canal['membros']}\n"
-                f"📌 Status: {status_aprovacao}\n"
-                f"🔗 Link Atual: `{canal['invite_link'] or 'Nenhum'}`\n\n"
-                f"Escolha o que deseja fazer:"
+                f"📌 Status: {status}\n"
+                f"🔗 Link: `{canal['invite_link'] or 'Nenhum'}`\n\n"
             )
-
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Atualizar Nome e Link", callback_data=f"atualizar_{chat_id}")],
-                [InlineKeyboardButton("🗑️ Remover Canal", callback_data=f"remover_{chat_id}")],
+                [InlineKeyboardButton("🔄 Atualizar Nome, Link e Reativar", callback_data=f"atualizar_{chat_id}")],
+                [InlineKeyboardButton("🗑️ Excluir Definitivamente", callback_data=f"remover_{chat_id}")],
                 [InlineKeyboardButton("⬅️ Voltar aos Meus Canais", callback_data="meus_canais")]
             ])
             await callback_query.message.edit_text(texto, reply_markup=keyboard)
@@ -517,83 +487,36 @@ async def lifespan(app: FastAPI):
                 novo_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
                 novos_membros = getattr(chat_info, "members_count", 0)
 
-                async with db_pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE canais SET titulo = $1, invite_link = $2, membros = $3 WHERE chat_id = $4",
-                        novo_titulo, novo_link, novos_membros, chat_id
-                    )
+                # Regra: Se ao atualizar o cara tem menos de 500, bloqueia
+                if novos_membros > 0 and novos_membros < 500:
+                    await callback_query.answer(f"O canal tem apenas {novos_membros} inscritos. O mínimo é 500. Não é possível ativar.", show_alert=True)
+                    return
 
-                await callback_query.answer("✅ Informações atualizadas com sucesso a partir do Telegram!", show_alert=True)
+                async with db_pool.acquire() as conn:
+                    # Se atualizou com sucesso e bate as regras, força o ativo = TRUE para resgatar canais "pausados" por strike
+                    await conn.execute("UPDATE canais SET titulo = $1, invite_link = $2, membros = $3, ativo = TRUE WHERE chat_id = $4", novo_titulo, novo_link, novos_membros, chat_id)
+                await callback_query.answer("✅ Informações atualizadas e canal ativado com sucesso!", show_alert=True)
                 
-                async with db_pool.acquire() as conn:
-                    canal = await conn.fetchrow("SELECT * FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
+                callback_query.data = f"gerenciar_{chat_id}"
+                return await callback_handler(client, callback_query)
 
-                if canal:
-                    cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
-                    status_aprovacao = "✅ Aprovado" if canal['aprovado'] else "⏳ Pendente de Aprovação"
-                    texto = (
-                        f"⚙️ **Gerenciando Canal:** {canal['titulo']}\n\n"
-                        f"📁 Categoria: {cat_nome}\n"
-                        f"👥 Membros: {canal['membros']}\n"
-                        f"📌 Status: {status_aprovacao}\n"
-                        f"🔗 Link Atual: `{canal['invite_link'] or 'Nenhum'}`\n\n"
-                        f"Escolha o que deseja fazer:"
-                    )
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Atualizar Nome e Link", callback_data=f"atualizar_{chat_id}")],
-                        [InlineKeyboardButton("🗑️ Remover Canal", callback_data=f"remover_{chat_id}")],
-                        [InlineKeyboardButton("⬅️ Voltar aos Meus Canais", callback_data="meus_canais")]
-                    ])
-                    try:
-                        await callback_query.message.edit_text(texto, reply_markup=keyboard)
-                    except Exception as ex:
-                        if "MESSAGE_NOT_MODIFIED" not in str(ex):
-                            raise ex
-
+            except (ChatWriteForbidden, ChatAdminRequired):
+                await callback_query.answer("⚠️ O bot não tem permissões de Admin neste canal! Dê a permissão antes de atualizar.", show_alert=True)
             except Exception as e:
-                logger.error(f"Erro ao atualizar canal {chat_id}: {e}")
-                await callback_query.answer("⚠️ As informações já estão atualizadas ou o bot precisa ser admin.", show_alert=True)
+                await callback_query.answer("⚠️ Ocorreu um erro ao buscar os dados do canal.", show_alert=True)
 
         elif data.startswith("remover_"):
             chat_id = int(data.split("_")[1])
             async with db_pool.acquire() as conn:
-                await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
-
-            await callback_query.answer("🗑️ Canal removido com sucesso!", show_alert=True)
-            
-            async with db_pool.acquire() as conn:
-                canais = await conn.fetch(
-                    "SELECT chat_id, titulo, categoria, membros, aprovado FROM canais WHERE dono_id = $1 AND ativo = TRUE LIMIT 5 OFFSET 0",
-                    user_id
-                )
-                total_row = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1 AND ativo = TRUE", user_id)
-
-            if not canais:
-                await callback_query.message.edit_text(
-                    "📂 Você não possui nenhum canal cadastrado ativo no momento.\n\n"
-                    "Adicione o bot como Administrador em um canal para começar!",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_inicio")]])
-                )
-                return
-
-            texto = f"📢 **Seus Canais Cadastrados** (Total: {total_row}):\n\n"
-            botoes = []
-            for canal in canais:
-                cat_nome = CATEGORIAS_DISPONIVEIS.get(canal['categoria'], "Não definida")
-                texto += f"• **{canal['titulo']}**\n  └ Categoria: {cat_nome}\n\n"
-                botoes.append([
-                    InlineKeyboardButton(f"⚙️ Gerenciar: {canal['titulo'][:20]}...", callback_data=f"gerenciar_{canal['chat_id']}")
-                ])
-            botoes.append([InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")])
-            await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
+                await conn.execute("DELETE FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
+            await callback_query.answer("🗑️ Canal apagado do sistema!", show_alert=True)
+            callback_query.data = "meus_canais"
+            return await callback_handler(client, callback_query)
 
         elif data == "voltar_inicio":
-            if user_id in admin_estados:
-                del admin_estados[user_id]
-
+            if user_id in admin_estados: del admin_estados[user_id]
             b_username = client.me.username
             link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
-            
             keyboard_rows = [
                 [InlineKeyboardButton("➕ Adicionar Bot ao Canal", url=link_adicao)],
                 [InlineKeyboardButton("📢 Meus Canais Cadastrados", callback_data="meus_canais")],
@@ -601,181 +524,93 @@ async def lifespan(app: FastAPI):
             ]
             if ADMIN_ID and user_id == ADMIN_ID:
                 keyboard_rows.insert(0, [InlineKeyboardButton("🛠️ Painel Admin", callback_data="admin_painel")])
-
-            keyboard = InlineKeyboardMarkup(keyboard_rows)
-            try:
-                await callback_query.message.edit_text(
-                    "👋 **Painel Principal - UP CANAIS**\n\n"
-                    "Gerencie seus canais na rede de troca de divulgações através dos botões abaixo:",
-                    reply_markup=keyboard
-                )
-            except Exception as ex:
-                if "MESSAGE_NOT_MODIFIED" not in str(ex):
-                    raise ex
+            try: await callback_query.message.edit_text("👋 **Painel Principal - UP CANAIS**\n\nGerencie através dos botões abaixo:", reply_markup=InlineKeyboardMarkup(keyboard_rows))
+            except Exception: pass
 
         elif data.startswith("setcat_"):
             partes = data.split("_", 2)
             if len(partes) == 3:
                 chat_id = int(partes[1])
                 categoria = partes[2]
-                
                 async with db_pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE canais SET categoria = $1 WHERE chat_id = $2",
-                        categoria, chat_id
-                    )
-                
+                    await conn.execute("UPDATE canais SET categoria = $1 WHERE chat_id = $2", categoria, chat_id)
                 nome_cat = CATEGORIAS_DISPONIVEIS.get(categoria, categoria)
-                b_username = client.me.username
-                link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📢 Ver Meus Canais", callback_data="meus_canais")],
-                    [InlineKeyboardButton("➕ Adicionar Outro Canal", url=link_adicao)]
-                ])
-                await callback_query.message.edit_text(
-                    f"🎉 **Canal configurado com sucesso!**\n\n"
-                    f"📁 Categoria definida: **{nome_cat}**\n"
-                    f"⏳ *Seu canal foi enviado para aprovação do administrador e logo estará participando das listas!*",
-                    reply_markup=keyboard
-                )
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Ver Meus Canais", callback_data="meus_canais")]])
+                await callback_query.message.edit_text(f"🎉 **Canal configurado com sucesso!**\n\n📁 Categoria: **{nome_cat}**\n⏳ *Enviado para aprovação do administrador.*", reply_markup=keyboard)
 
                 if ADMIN_ID:
                     try:
                         async with db_pool.acquire() as conn:
-                            info_canal = await conn.fetchrow("SELECT titulo, membros FROM canais WHERE chat_id = $1", chat_id)
-                        
-                        await client.send_message(
-                            chat_id=ADMIN_ID,
-                            text=f"🔔 **Novo Canal Pendente de Aprovação!**\n\n"
-                                 f"📌 Canal: **{info_canal['titulo'] if info_canal else 'Desconhecido'}**\n"
-                                 f"📁 Categoria: {nome_cat}\n"
-                                 f"👥 Membros: {info_canal['membros'] if info_canal else 0}\n\n"
-                                 f"Acesse o `/admin` para aprovar ou rejeitar.",
-                            reply_markup=InlineKeyboardMarkup([
-                                [InlineKeyboardButton("🛠️ Ir para Painel de Pendentes", callback_data="admin_pendentes")]
-                            ])
-                        )
-                    except Exception as ex:
-                        logger.error(f"Erro ao notificar admin sobre novo canal: {ex}")
+                            info = await conn.fetchrow("SELECT titulo, membros FROM canais WHERE chat_id = $1", chat_id)
+                        await client.send_message(ADMIN_ID, f"🔔 **Novo Canal Pendente!**\n\n📌 Canal: **{info['titulo']}**\n📁 Categoria: {nome_cat}\n👥 Membros: {info['membros']}\n\nAcesse o `/admin`.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛠️ Ir para Painel", callback_data="admin_pendentes")]]))
+                    except Exception: pass
 
     @bot.on_message(filters.private & ~filters.command(["start", "admin", "testar"]))
     async def capturar_texto_admin(client: Client, message):
         user_id = message.from_user.id
-        if not ADMIN_ID or user_id != ADMIN_ID:
+        if not ADMIN_ID or user_id != ADMIN_ID or user_id not in admin_estados:
             return
-
-        if user_id not in admin_estados:
-            return
-
         estado = admin_estados[user_id]
         texto = message.text.strip()
-
         if estado["etapa"] == "aguardando_titulo":
             estado["titulo"] = texto
             estado["etapa"] = "aguardando_url"
-            await message.reply_text(
-                f"✅ Título salvo: **{texto}**\n\n"
-                f"Agora, envie a **URL / Link de destino**:"
-            )
+            await message.reply_text(f"✅ Título salvo: **{texto}**\n\nAgora, envie a **URL**:")
         elif estado["etapa"] == "aguardando_url":
-            categoria = estado["categoria"]
-            titulo = estado["titulo"]
-            url = texto
-
             async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO links_fixos (titulo, url, categoria) VALUES ($1, $2, $3)",
-                    titulo, url, categoria
-                )
-
+                await conn.execute("INSERT INTO links_fixos (titulo, url, categoria) VALUES ($1, $2, $3)", estado["titulo"], texto, estado["categoria"])
             del admin_estados[user_id]
-            
-            nome_cat_exibicao = "🌐 Todas as Categorias" if categoria == "todas" else CATEGORIAS_DISPONIVEIS.get(categoria, categoria)
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Adicionar Outro Link", callback_data="admin_addlink")],
-                [InlineKeyboardButton("🛠️ Voltar ao Painel Admin", callback_data="admin_painel")]
-            ])
-            await message.reply_text(
-                f"🎉 **Link Fixo cadastrado com sucesso!**\n\n"
-                f"📌 Alvo: {nome_cat_exibicao}\n"
-                f"📝 Título: {titulo}\n"
-                f"🔗 URL: {url}",
-                reply_markup=keyboard
-            )
+            await message.reply_text("🎉 **Link Fixo cadastrado com sucesso!**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Painel Admin", callback_data="admin_painel")]]))
 
     @bot.on_chat_member_updated()
     async def bot_added_to_channel(client: Client, update: ChatMemberUpdated):
-        if update.new_chat_member and update.new_chat_member.user.is_self:
-            if update.new_chat_member.status == ChatMemberStatus.ADMINISTRATOR:
-                chat_id = update.chat.id
-                chat_title = update.chat.title
-                user_id = update.from_user.id if update.from_user else None
-                
-                if not user_id:
-                    logger.warning(f"⚠️ O bot foi adicionado ao canal {chat_title} ({chat_id}), mas o ID do usuário não foi retornado.")
+        if update.new_chat_member and update.new_chat_member.user.is_self and update.new_chat_member.status == ChatMemberStatus.ADMINISTRATOR:
+            chat_id = update.chat.id
+            chat_title = update.chat.title
+            user_id = update.from_user.id if update.from_user else None
+            if not user_id: return
+            try:
+                chat_info = await client.get_chat(chat_id)
+                membros = getattr(chat_info, "members_count", 0)
+                invite_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
+
+                if membros > 0 and membros < 500:
+                    await client.send_message(user_id, f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O mínimo é 500.")
                     return
 
-                try:
-                    chat_info = await client.get_chat(chat_id)
-                    membros = getattr(chat_info, "members_count", 0)
-                    invite_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
+                async with db_pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo, aprovado)
+                        VALUES ($1, $2, $3, $4, $5, TRUE, FALSE)
+                        ON CONFLICT (chat_id) DO UPDATE 
+                        SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
+                            invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE
+                    """, chat_id, chat_title, user_id, invite_link, membros)
 
-                    if membros > 0 and membros < 500:
-                        await client.send_message(
-                            chat_id=user_id,
-                            text=f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O requisito mínimo é de 500 membros para participar."
-                        )
-                        return
+                botoes = []
+                linha = []
+                for k, v in CATEGORIAS_DISPONIVEIS.items():
+                    linha.append(InlineKeyboardButton(v, callback_data=f"setcat_{chat_id}_{k}"))
+                    if len(linha) == 2:
+                        botoes.append(linha)
+                        linha = []
+                if linha: botoes.append(linha)
 
-                    async with db_pool.acquire() as conn:
-                        await conn.execute("""
-                            INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo, aprovado)
-                            VALUES ($1, $2, $3, $4, $5, TRUE, FALSE)
-                            ON CONFLICT (chat_id) DO UPDATE 
-                            SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
-                                invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE
-                        """, chat_id, chat_title, user_id, invite_link, membros)
-
-                    botoes_categorias = []
-                    linha_temp = []
-                    for cat_key, cat_nome in CATEGORIAS_DISPONIVEIS.items():
-                        linha_temp.append(InlineKeyboardButton(cat_nome, callback_data=f"setcat_{chat_id}_{cat_key}"))
-                        if len(linha_temp) == 2:
-                            botoes_categorias.append(linha_temp)
-                            linha_temp = []
-                    if linha_temp:
-                        botoes_categorias.append(linha_temp)
-
-                    keyboard_cats = InlineKeyboardMarkup(botoes_categorias)
-
-                    await client.send_message(
-                        chat_id=user_id,
-                        text=f"✅ Fui adicionado com sucesso no canal **{chat_title}**!\n\n"
-                             f"Agora, selecione abaixo a **categoria** correta do seu canal:",
-                        reply_markup=keyboard_cats
-                    )
-                    logger.info(f"✅ Canal {chat_title} ({chat_id}) registrado como pendente para o usuário {user_id}!")
-
-                except Exception as e:
-                    logger.error(f"❌ Erro ao processar canal adicionado {chat_id}: {e}")
-                    try:
-                        await client.send_message(
-                            chat_id=user_id,
-                            text="⚠️ Fui adicionado ao canal, mas ocorreu um erro interno. Verifique se você já iniciou uma conversa comigo no chat privado (/start)."
-                        )
-                    except:
-                        pass
+                await client.send_message(user_id, f"✅ Fui adicionado no canal **{chat_title}**!\n\nSelecione a **categoria** do seu canal:", reply_markup=InlineKeyboardMarkup(botoes))
+            except Exception: pass
 
     await bot.start()
     logger.info(f"🤖 Bot @{bot.me.username} Online e pronto!")
 
-    # Corrigindo o Fuso Horário para as 12:00 e 20:00 de Brasília
     fuso_horario = ZoneInfo("America/Sao_Paulo")
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=12, minute=0, timezone=fuso_horario))
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=20, minute=0, timezone=fuso_horario))
     
+    # NOVO: Varredura Semanal todo Domingo às 03:00 da madrugada
+    scheduler.add_job(monitorar_membros_semanal, CronTrigger(day_of_week='sun', hour=3, minute=0, timezone=fuso_horario))
+    
     scheduler.start()
-    logger.info("⏰ Agendador de listas por categoria ativado (Fuso: America/Sao_Paulo).")
+    logger.info("⏰ Agendador de listas e varreduras ativado (Fuso: America/Sao_Paulo).")
     
     yield
     
