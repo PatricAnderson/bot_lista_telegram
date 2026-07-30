@@ -8,6 +8,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMembe
 from pyrogram.enums import ChatMemberStatus
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from zoneinfo import ZoneInfo  # Importante para corrigir o fuso horário
 
 # ==========================================
 # 1. CONFIGURAÇÃO DE LOGS
@@ -82,7 +83,8 @@ async def disparar_troca_por_categoria():
                     categoria
                 )
 
-                destinos = await conn.fetch("SELECT chat_id FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE", categoria)
+                # Busca também a última mensagem enviada para poder deletar
+                destinos = await conn.fetch("SELECT chat_id, ultima_mensagem_id FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE", categoria)
 
                 if not destinos:
                     continue
@@ -122,16 +124,29 @@ async def disparar_troca_por_categoria():
                 keyboard = InlineKeyboardMarkup(botoes)
 
                 for dest in destinos:
+                    chat_id = dest['chat_id']
+                    ultima_msg_id = dest['ultima_mensagem_id']
+
+                    # 1. Apaga a lista anterior (se existir)
+                    if ultima_msg_id:
+                        try:
+                            await bot.delete_messages(chat_id=chat_id, message_ids=ultima_msg_id)
+                        except Exception as e:
+                            logger.warning(f"Aviso: Não foi possível apagar mensagem antiga {ultima_msg_id} no canal {chat_id}: {e}")
+
+                    # 2. Envia a lista nova
                     try:
-                        await bot.send_message(
-                            chat_id=dest['chat_id'],
+                        nova_msg = await bot.send_message(
+                            chat_id=chat_id,
                             text=texto_lista,
                             reply_markup=keyboard,
                             disable_web_page_preview=True
                         )
-                        logger.info(f"📤 Lista enviada com sucesso para o canal {dest['chat_id']} ({categoria})")
+                        # 3. Salva o ID da nova lista no banco de dados
+                        await conn.execute("UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2", nova_msg.id, chat_id)
+                        logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id} ({categoria})")
                     except Exception as e:
-                        logger.error(f"❌ Erro ao enviar lista para o canal {dest['chat_id']}: {e}")
+                        logger.error(f"❌ Erro ao enviar lista para o canal {chat_id}: {e}")
 
         logger.info("✅ Ciclo de troca de divulgação concluído com sucesso!")
         return True
@@ -168,7 +183,8 @@ async def lifespan(app: FastAPI):
                     membros INT DEFAULT 0,
                     vip BOOLEAN DEFAULT FALSE,
                     ativo BOOLEAN DEFAULT TRUE,
-                    aprovado BOOLEAN DEFAULT FALSE
+                    aprovado BOOLEAN DEFAULT FALSE,
+                    ultima_mensagem_id BIGINT
                 );
                 
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS invite_link TEXT;
@@ -177,6 +193,7 @@ async def lifespan(app: FastAPI):
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS vip BOOLEAN DEFAULT FALSE;
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS ativo BOOLEAN DEFAULT TRUE;
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS aprovado BOOLEAN DEFAULT FALSE;
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS ultima_mensagem_id BIGINT;
 
                 CREATE TABLE IF NOT EXISTS links_fixos (
                     id SERIAL PRIMARY KEY,
@@ -245,7 +262,7 @@ async def lifespan(app: FastAPI):
             await message.reply_text("⛔ Acesso negado.")
             return
 
-        await message.reply_text("🚀 Executando disparo de teste das listas em todos os canais aprovados...")
+        await message.reply_text("🚀 Executando disparo de teste das listas (Apagando as antigas e enviando as novas)...")
         sucesso = await disparar_troca_por_categoria()
         if sucesso:
             await message.reply_text("✅ Disparo de teste concluído com sucesso!")
@@ -320,7 +337,6 @@ async def lifespan(app: FastAPI):
                 except:
                     pass
 
-            # Recarrega a lista de pendentes
             callback_query.data = "admin_pendentes"
             return await callback_handler(client, callback_query)
 
@@ -623,7 +639,6 @@ async def lifespan(app: FastAPI):
                     reply_markup=keyboard
                 )
 
-                # Notifica o Administrador sobre o novo canal pendente
                 if ADMIN_ID:
                     try:
                         async with db_pool.acquire() as conn:
@@ -754,10 +769,13 @@ async def lifespan(app: FastAPI):
     await bot.start()
     logger.info(f"🤖 Bot @{bot.me.username} Online e pronto!")
 
-    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=12, minute=0))
-    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=20, minute=0))
+    # Corrigindo o Fuso Horário para as 12:00 e 20:00 de Brasília
+    fuso_horario = ZoneInfo("America/Sao_Paulo")
+    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=12, minute=0, timezone=fuso_horario))
+    scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=20, minute=0, timezone=fuso_horario))
+    
     scheduler.start()
-    logger.info("⏰ Agendador de listas por categoria ativado.")
+    logger.info("⏰ Agendador de listas por categoria ativado (Fuso: America/Sao_Paulo).")
     
     yield
     
