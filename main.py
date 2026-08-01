@@ -75,7 +75,7 @@ async def disparar_troca_por_categoria():
                 categoria = cat_row['categoria']
 
                 vips = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE AND aprovado = TRUE LIMIT 4", categoria)
-                normais = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE ORDER BY RANDOM() LIMIT 14", categoria)
+                normais = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE ORDER BY RANDOM() LIMIT 20", categoria)
                 links_fixos = await conn.fetch("SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", categoria)
 
                 # Busca destinos reais (ignora fakes que tem ID negativo gerado e dono == ADMIN)
@@ -102,7 +102,7 @@ async def disparar_troca_por_categoria():
 
                 linha_dupla = []
                 for n in normais:
-                    linha_dupla.append(InlineKeyboardButton(f"🚀 {n['titulo']}", url=n['invite_link'] or "https://t.me/"))
+                    linha_dupla.append(InlineKeyboardButton(n['titulo'], url=n['invite_link'] or "https://t.me/"))
                     if len(linha_dupla) == 2:
                         botoes.append(linha_dupla)
                         linha_dupla = []
