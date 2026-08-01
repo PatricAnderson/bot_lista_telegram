@@ -11,11 +11,15 @@ async def start_command(client: Client, message):
     user_id = message.from_user.id
     username = message.from_user.username
     
-    async with database.db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO usuarios (telegram_id, username) VALUES ($1, $2)
-            ON CONFLICT (telegram_id) DO UPDATE SET username = EXCLUDED.username
-        """, user_id, username)
+    # Proteção: Grava o usuário no banco, garantindo que falhas de DB não travem a resposta
+    try:
+        async with database.db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO usuarios (telegram_id, username) VALUES ($1, $2)
+                ON CONFLICT (telegram_id) DO UPDATE SET username = EXCLUDED.username
+            """, user_id, username)
+    except Exception as e:
+        print(f"⚠️ Erro ao registrar usuário no DB: {e}")
 
     b_username = client.me.username
     link_adicao = f"https://t.me/{b_username}?startchannel=true&admin=post_messages+edit_messages+delete_messages+invite_users"
@@ -87,8 +91,12 @@ async def admin_command(client: Client, message):
 async def testar_comando(client: Client, message):
     if ADMIN_ID and message.from_user.id != ADMIN_ID: return
     await message.reply_text("🚀 Disparando teste...")
-    sucesso = await disparar_troca_por_categoria(client)
-    await message.reply_text("✅ Sucesso!" if sucesso else "❌ Falha.")
+    try:
+        # Corrigido: disparar_troca_por_categoria agora não recebe parâmetros
+        await disparar_troca_por_categoria()
+        await message.reply_text("✅ Comando de teste disparado com sucesso no servidor!")
+    except Exception as e:
+        await message.reply_text(f"❌ Falha ao disparar o teste: {e}")
 
 @Client.on_message(filters.private & ~filters.command(["start", "admin", "testar", "importar"]))
 async def capturar_texto_admin(client: Client, message):
