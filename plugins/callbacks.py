@@ -101,13 +101,11 @@ async def callback_handler(client: Client, callback_query):
         callback_query.data = "admin_listlinks"
         return await callback_handler(client, callback_query)
 
-    # --- CORREÇÃO APLICADA AQUI ---
     elif data == "meus_canais" or data.startswith("pagcanais_"):
         partes = data.split("_")
         offset = 0
         if len(partes) > 1 and partes[-1].isdigit():
             offset = int(partes[-1])
-    # ------------------------------
         
         async with database.db_pool.acquire() as conn:
             canais = await conn.fetch("SELECT chat_id, titulo, ativo, aprovado FROM canais WHERE dono_id = $1 LIMIT 5 OFFSET $2", user_id, offset)
@@ -142,6 +140,7 @@ async def callback_handler(client: Client, callback_query):
         ])
         await callback_query.message.edit_text(texto, reply_markup=kb)
 
+    # --- NOVO BLOCO ATUALIZADO ---
     elif data.startswith("atualizar_"):
         chat_id = int(data.split("_")[1])
         try:
@@ -152,10 +151,24 @@ async def callback_handler(client: Client, callback_query):
             
             async with database.db_pool.acquire() as conn:
                 await conn.execute("UPDATE canais SET titulo = $1, invite_link = $2, membros = $3, ativo = TRUE WHERE chat_id = $4", chat_info.title, link, novos_membros, chat_id)
-            await callback_query.answer("Atualizado!", show_alert=True)
+            await callback_query.answer("Atualizado com sucesso!", show_alert=True)
             callback_query.data = f"gerenciar_{chat_id}"
             return await callback_handler(client, callback_query)
-        except ChatWriteForbidden: await callback_query.answer("O bot precisa ser Admin!", show_alert=True)
+            
+        except ValueError:
+            # Captura o erro de Peer ID Invalid (Amnésia da memória)
+            await callback_query.answer("⚠️ Bot perdeu o acesso ao canal. Leia a mensagem!", show_alert=True)
+            await client.send_message(
+                user_id,
+                "⚠️ **Sincronização Necessária!**\n\n"
+                "Como o sistema foi reiniciado, o bot esqueceu a chave de acesso deste canal.\n"
+                "👉 **Para resolver:** Vá no canal, **encaminhe qualquer mensagem de lá para cá** e depois clique em 'Atualizar' novamente!"
+            )
+        except ChatWriteForbidden: 
+            await callback_query.answer("O bot precisa ser Admin no canal!", show_alert=True)
+        except Exception as e:
+            await callback_query.answer("Erro ao acessar canal. Tente remover e adicionar o bot lá novamente.", show_alert=True)
+    # -----------------------------
 
     elif data.startswith("remover_"):
         chat_id = int(data.split("_")[1])
