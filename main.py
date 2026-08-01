@@ -329,7 +329,7 @@ async def lifespan(app: FastAPI):
                             INSERT INTO canais (chat_id, titulo, dono_id, categoria, invite_link, membros, ativo, aprovado, semente)
                             VALUES ($1, $2, $3, $4, $5, $6, TRUE, TRUE, TRUE)
                             ON CONFLICT DO NOTHING
-                        """, fake_chat_id, ADMIN_ID, categoria_alvo, link, 150)
+                        """, fake_chat_id, titulo, ADMIN_ID, categoria_alvo, link, 150)
                         
                         adicionados += 1
                         
