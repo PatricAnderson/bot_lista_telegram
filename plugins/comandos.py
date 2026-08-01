@@ -8,6 +8,8 @@ from rotinas import disparar_troca_por_categoria
 
 @Client.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message):
+    print("🚨 RECEBI O COMANDO START!") # <-- Adicionado para debug
+    
     user_id = message.from_user.id
     username = message.from_user.username
     
@@ -79,6 +81,8 @@ async def importar_fakes(client: Client, message):
 
 @Client.on_message(filters.command("admin") & filters.private)
 async def admin_command(client: Client, message):
+    print("🚨 RECEBI O COMANDO ADMIN!") # <-- Adicionado para debug
+    
     if ADMIN_ID and message.from_user.id != ADMIN_ID: return
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⏳ Canais Pendentes", callback_data="admin_pendentes")],
@@ -92,7 +96,6 @@ async def testar_comando(client: Client, message):
     if ADMIN_ID and message.from_user.id != ADMIN_ID: return
     await message.reply_text("🚀 Disparando teste...")
     try:
-        # Corrigido: disparar_troca_por_categoria agora não recebe parâmetros
         await disparar_troca_por_categoria()
         await message.reply_text("✅ Comando de teste disparado com sucesso no servidor!")
     except Exception as e:
