@@ -101,8 +101,14 @@ async def callback_handler(client: Client, callback_query):
         callback_query.data = "admin_listlinks"
         return await callback_handler(client, callback_query)
 
+    # --- CORREÇÃO APLICADA AQUI ---
     elif data == "meus_canais" or data.startswith("pagcanais_"):
-        offset = int(data.split("_")[1]) if "_" in data else 0
+        partes = data.split("_")
+        offset = 0
+        if len(partes) > 1 and partes[-1].isdigit():
+            offset = int(partes[-1])
+    # ------------------------------
+        
         async with database.db_pool.acquire() as conn:
             canais = await conn.fetch("SELECT chat_id, titulo, ativo, aprovado FROM canais WHERE dono_id = $1 LIMIT 5 OFFSET $2", user_id, offset)
             total = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1", user_id)
