@@ -1,5 +1,6 @@
 import os
 import logging
+import random
 from contextlib import asynccontextmanager
 import asyncpg
 from fastapi import FastAPI
@@ -43,8 +44,8 @@ CATEGORIAS_DISPONIVEIS = {
     "noticias": "📢 Notícias, Política & Utilidades",
     "financas": "📈 Finanças, Cripto & Investimentos",
     "esportes": "⚽ Esportes & Futebol",
-    "musica": "🎵 Músicas, Áudios & Valeton",
-    "humor": "😂 Humor, Memes & Entretenimento",
+    "musica": "🎵 Músicas, Áudios & Entretenimento",
+    "humor": "😂 Humor, Memes & Comédia",
     "vendas": "🛒 Vendas, Afiliados & Lojas",
     "geral": "🌐 Variedades & Geral"
 }
@@ -53,7 +54,7 @@ CATEGORIAS_DISPONIVEIS = {
 # 4. FUNÇÕES DE AUTOMAÇÃO E VARREDURA
 # ==========================================
 
-# Rotina 1: Disparo Diário das Listas (com Sistema de Strikes)
+# Rotina 1: Disparo Diário das Listas (com Sistema de Strikes e Contagem)
 async def disparar_troca_por_categoria():
     if not bot:
         logger.error("Bot não inicializado para o disparo.")
@@ -67,6 +68,9 @@ async def disparar_troca_por_categoria():
                 logger.info("⚠️ Nenhuma categoria ativa encontrada para disparo.")
                 return False
 
+            # Pega a contagem total de canais reais + fakes para mostrar na mensagem
+            total_canais = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE ativo = TRUE AND aprovado = TRUE")
+
             for cat_row in categorias:
                 categoria = cat_row['categoria']
 
@@ -74,16 +78,19 @@ async def disparar_troca_por_categoria():
                 normais = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE ORDER BY RANDOM() LIMIT 14", categoria)
                 links_fixos = await conn.fetch("SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", categoria)
 
-                # Agora buscamos dono_id e titulo para poder notificar em caso de Strike
-                destinos = await conn.fetch("SELECT chat_id, ultima_mensagem_id, dono_id, titulo FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE", categoria)
+                # Busca destinos reais (ignora fakes que tem ID negativo gerado e dono == ADMIN)
+                destinos = await conn.fetch("SELECT chat_id, ultima_mensagem_id, dono_id, titulo FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE AND semente = FALSE", categoria)
 
                 if not destinos:
                     continue
 
                 nome_cat_formatado = CATEGORIAS_DISPONIVEIS.get(categoria, categoria.upper())
+                
+                # Texto atualizado com a contagem total
                 texto_lista = (
                     f"🔥 **MELHORES CANAIS - {nome_cat_formatado}** 🔥\n\n"
-                    f"✨ Conteúdos exclusivos, atualizados e sem censura.\n\n"
+                    f"✨ Conteúdos exclusivos, atualizados e sem censura.\n"
+                    f"📈 **{total_canais} canais** cadastrados na nossa rede!\n\n"
                     f"👇 *Escolha abaixo e acesse agora!*"
                 )
 
@@ -112,14 +119,12 @@ async def disparar_troca_por_categoria():
                     titulo_canal = dest['titulo']
 
                     try:
-                        # Tenta apagar a lista anterior
                         if ultima_msg_id:
                             try:
                                 await bot.delete_messages(chat_id=chat_id, message_ids=ultima_msg_id)
                             except Exception:
                                 pass
 
-                        # Envia a nova lista
                         nova_msg = await bot.send_message(
                             chat_id=chat_id,
                             text=texto_lista,
@@ -129,7 +134,6 @@ async def disparar_troca_por_categoria():
                         await conn.execute("UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2", nova_msg.id, chat_id)
                         logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id}")
 
-                    # SISTEMA DE STRIKE: Se o bot perdeu permissão ou foi expulso
                     except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel) as e:
                         logger.warning(f"🚫 Strike! Sem permissão no canal {chat_id}. Pausando canal.")
                         await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
@@ -138,7 +142,7 @@ async def disparar_troca_por_categoria():
                                 dono_id,
                                 f"⚠️ **Aviso de Desligamento Automático!**\n\n"
                                 f"Fui impedido de enviar a lista no seu canal **{titulo_canal}**. Isso geralmente acontece se eu for removido dos administradores ou banido.\n\n"
-                                f"Seu canal foi **pausado** da rede. Para voltar, adicione o bot novamente como Administrador com todas as permissões e clique em 'Atualizar Nome e Link' no seu painel."
+                                f"Seu canal foi **pausado** da rede. Para voltar, adicione o bot novamente como Administrador e clique em 'Atualizar Nome e Link' no seu painel."
                             )
                         except Exception:
                             pass
@@ -151,15 +155,14 @@ async def disparar_troca_por_categoria():
         logger.error(f"❌ Erro no agendador de listas: {e}")
         return False
 
-
-# Rotina 2: Varredura Semanal de Membros (Validação da Regra de 100+)
+# Rotina 2: Varredura Semanal de Membros (Valida apenas reais)
 async def monitorar_membros_semanal():
     if not bot:
         return
     logger.info("🔍 Iniciando varredura semanal de quantidade de membros...")
     try:
         async with db_pool.acquire() as conn:
-            canais_ativos = await conn.fetch("SELECT chat_id, titulo, dono_id FROM canais WHERE ativo = TRUE AND aprovado = TRUE")
+            canais_ativos = await conn.fetch("SELECT chat_id, titulo, dono_id FROM canais WHERE ativo = TRUE AND aprovado = TRUE AND semente = FALSE")
             
             for c in canais_ativos:
                 chat_id = c['chat_id']
@@ -170,10 +173,8 @@ async def monitorar_membros_semanal():
                     chat_info = await bot.get_chat(chat_id)
                     membros_atuais = getattr(chat_info, "members_count", 0)
 
-                    # Atualiza o novo número de membros no banco de dados para os status sempre baterem
                     await conn.execute("UPDATE canais SET membros = $1 WHERE chat_id = $2", membros_atuais, chat_id)
 
-                    # Se caiu para menos de 100, aplica a suspensão
                     if 0 < membros_atuais < 100:
                         await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
                         logger.info(f"📉 Canal {chat_id} pausado por queda de membros ({membros_atuais}).")
@@ -183,18 +184,17 @@ async def monitorar_membros_semanal():
                                 f"📉 **Alerta de Queda de Membros!**\n\n"
                                 f"Durante nossa varredura semanal, notamos que seu canal **{titulo}** caiu para {membros_atuais} membros.\n"
                                 f"Como nossa regra exige um mínimo de **100 membros**, seu canal foi temporariamente **pausado**.\n\n"
-                                f"Assim que recuperar o engajamento, acesse seu painel e atualize os dados para voltar a participar!"
+                                f"Assim que recuperar o engajamento, acesse seu painel e atualize os dados para voltar!"
                             )
                         except Exception:
                             pass
                             
                 except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel):
-                    # Se não conseguir acessar as infos, aplica o strike também
                     await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
                 except Exception as e:
                     logger.error(f"Erro ao consultar canal {chat_id} na varredura: {e}")
                     
-        logger.info("✅ Varredura semanal de membros concluída!")
+        logger.info("✅ Varredura semanal concluída!")
     except Exception as e:
         logger.error(f"Erro na varredura semanal: {e}")
 
@@ -227,7 +227,8 @@ async def lifespan(app: FastAPI):
                     vip BOOLEAN DEFAULT FALSE,
                     ativo BOOLEAN DEFAULT TRUE,
                     aprovado BOOLEAN DEFAULT FALSE,
-                    ultima_mensagem_id BIGINT
+                    ultima_mensagem_id BIGINT,
+                    semente BOOLEAN DEFAULT FALSE
                 );
                 
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS invite_link TEXT;
@@ -237,6 +238,7 @@ async def lifespan(app: FastAPI):
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS ativo BOOLEAN DEFAULT TRUE;
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS aprovado BOOLEAN DEFAULT FALSE;
                 ALTER TABLE canais ADD COLUMN IF NOT EXISTS ultima_mensagem_id BIGINT;
+                ALTER TABLE canais ADD COLUMN IF NOT EXISTS semente BOOLEAN DEFAULT FALSE;
 
                 CREATE TABLE IF NOT EXISTS links_fixos (
                     id SERIAL PRIMARY KEY,
@@ -282,6 +284,60 @@ async def lifespan(app: FastAPI):
             "*(Para cadastrar um novo canal, adicione-me como administrador nele).* ",
             reply_markup=keyboard
         )
+
+    # ----------------------------------------------------
+    # NOVO: COMANDO DE IMPORTAÇÃO DE TXT
+    # ----------------------------------------------------
+    @bot.on_message(filters.command("importar") & filters.private)
+    async def importar_fakes(client: Client, message):
+        user_id = message.from_user.id
+        if ADMIN_ID and user_id != ADMIN_ID:
+            return
+            
+        if not message.reply_to_message or not message.reply_to_message.document:
+            await message.reply_text("⚠️ **Modo de Uso:**\nEnvie o arquivo `.txt` gerado pelo scraper.\nResponda ao arquivo com o comando: `/importar <categoria>`\nExemplo: `/importar adulto`")
+            return
+            
+        partes = message.text.split()
+        if len(partes) < 2 or partes[1] not in CATEGORIAS_DISPONIVEIS:
+            cats = ", ".join(CATEGORIAS_DISPONIVEIS.keys())
+            await message.reply_text(f"⚠️ **Categoria inválida!**\nEscolha uma destas: `{cats}`")
+            return
+            
+        categoria_alvo = partes[1]
+        msg_status = await message.reply_text("⏳ Baixando e processando o arquivo...")
+        
+        arquivo_path = await client.download_media(message.reply_to_message)
+        adicionados = 0
+        
+        try:
+            with open(arquivo_path, 'r', encoding='utf-8') as f:
+                linhas = f.readlines()
+                
+            async with db_pool.acquire() as conn:
+                for linha in linhas:
+                    if "|" in linha:
+                        titulo, link = linha.split("|", 1)
+                        titulo = titulo.strip()
+                        link = link.strip()
+                        
+                        # Gera um ID falso, alto e negativo para nunca conflitar com grupos do Telegram
+                        fake_chat_id = -random.randint(100000000000, 999999999999)
+                        
+                        # Injeta no banco com semente = TRUE
+                        await conn.execute("""
+                            INSERT INTO canais (chat_id, titulo, dono_id, categoria, invite_link, membros, ativo, aprovado, semente)
+                            VALUES ($1, $2, $3, $4, $5, $6, TRUE, TRUE, TRUE)
+                            ON CONFLICT DO NOTHING
+                        """, fake_chat_id, ADMIN_ID, categoria_alvo, link, 150)
+                        
+                        adicionados += 1
+                        
+            os.remove(arquivo_path)
+            await msg_status.edit_text(f"🎉 **Importação Concluída!**\n\nForam adicionados **{adicionados}** canais sementes (fakes) na categoria `{categoria_alvo}`.")
+            
+        except Exception as e:
+            await msg_status.edit_text(f"❌ **Erro na importação:** {e}")
 
     @bot.on_message(filters.command("admin") & filters.private)
     async def admin_command(client: Client, message):
@@ -357,8 +413,22 @@ async def lifespan(app: FastAPI):
             if ADMIN_ID and user_id != ADMIN_ID: return
             chat_id = int(data.split("_")[1])
             async with db_pool.acquire() as conn:
-                canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE, ativo = TRUE WHERE chat_id = $1 RETURNING titulo, dono_id", chat_id)
-            await callback_query.answer("✅ Canal aprovado!", show_alert=True)
+                canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE, ativo = TRUE WHERE chat_id = $1 RETURNING titulo, dono_id, categoria", chat_id)
+                
+                # ----------------------------------------------------
+                # LÓGICA DE SUBSTITUIÇÃO (Remove 1 Semente da Categoria)
+                # ----------------------------------------------------
+                if canal:
+                    await conn.execute("""
+                        DELETE FROM canais 
+                        WHERE chat_id IN (
+                            SELECT chat_id FROM canais 
+                            WHERE semente = TRUE AND categoria = $1 
+                            LIMIT 1
+                        )
+                    """, canal['categoria'])
+
+            await callback_query.answer("✅ Canal aprovado! Um link semente foi removido (se houver).", show_alert=True)
             if canal and canal['dono_id']:
                 try: await client.send_message(canal['dono_id'], f"🎉 Parabéns! Seu canal **{canal['titulo']}** foi **aprovado** na rede UP CANAIS!")
                 except: pass
@@ -487,13 +557,11 @@ async def lifespan(app: FastAPI):
                 novo_link = chat_info.invite_link or chat_info.username or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
                 novos_membros = getattr(chat_info, "members_count", 0)
 
-                # Regra: Se ao atualizar o cara tem menos de 100, bloqueia
                 if novos_membros > 0 and novos_membros < 100:
                     await callback_query.answer(f"O canal tem apenas {novos_membros} inscritos. O mínimo é 100. Não é possível ativar.", show_alert=True)
                     return
 
                 async with db_pool.acquire() as conn:
-                    # Se atualizou com sucesso e bate as regras, força o ativo = TRUE para resgatar canais "pausados" por strike
                     await conn.execute("UPDATE canais SET titulo = $1, invite_link = $2, membros = $3, ativo = TRUE WHERE chat_id = $4", novo_titulo, novo_link, novos_membros, chat_id)
                 await callback_query.answer("✅ Informações atualizadas e canal ativado com sucesso!", show_alert=True)
                 
@@ -545,7 +613,7 @@ async def lifespan(app: FastAPI):
                         await client.send_message(ADMIN_ID, f"🔔 **Novo Canal Pendente!**\n\n📌 Canal: **{info['titulo']}**\n📁 Categoria: {nome_cat}\n👥 Membros: {info['membros']}\n\nAcesse o `/admin`.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛠️ Ir para Painel", callback_data="admin_pendentes")]]))
                     except Exception: pass
 
-    @bot.on_message(filters.private & ~filters.command(["start", "admin", "testar"]))
+    @bot.on_message(filters.private & ~filters.command(["start", "admin", "testar", "importar"]))
     async def capturar_texto_admin(client: Client, message):
         user_id = message.from_user.id
         if not ADMIN_ID or user_id != ADMIN_ID or user_id not in admin_estados:
@@ -579,12 +647,13 @@ async def lifespan(app: FastAPI):
                     return
 
                 async with db_pool.acquire() as conn:
+                    # Registra garantindo que semente seja FALSO
                     await conn.execute("""
-                        INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo, aprovado)
-                        VALUES ($1, $2, $3, $4, $5, TRUE, FALSE)
+                        INSERT INTO canais (chat_id, titulo, dono_id, invite_link, membros, ativo, aprovado, semente)
+                        VALUES ($1, $2, $3, $4, $5, TRUE, FALSE, FALSE)
                         ON CONFLICT (chat_id) DO UPDATE 
                         SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
-                            invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE
+                            invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE, semente = FALSE
                     """, chat_id, chat_title, user_id, invite_link, membros)
 
                 botoes = []
@@ -606,7 +675,6 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=14, minute=0, timezone=fuso_horario))
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=21, minute=0, timezone=fuso_horario))
     
-    # NOVO: Varredura Semanal todo Domingo às 03:00 da madrugada
     scheduler.add_job(monitorar_membros_semanal, CronTrigger(day_of_week='sun', hour=3, minute=0, timezone=fuso_horario))
     
     scheduler.start()
