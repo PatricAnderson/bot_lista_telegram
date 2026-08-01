@@ -69,16 +69,18 @@ async def disparar_troca_por_categoria():
                 return False
 
             # Pega a contagem total de canais reais + fakes para mostrar na mensagem
+            # ... (código anterior)
             total_canais = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE ativo = TRUE AND aprovado = TRUE")
 
             for cat_row in categorias:
                 categoria = cat_row['categoria']
 
-                vips = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE AND aprovado = TRUE LIMIT 4", categoria)
-                normais = await conn.fetch("SELECT titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE ORDER BY RANDOM() LIMIT 20", categoria)
+                # 1. Puxamos TODOS os canais normais e VIPs da categoria (trazendo o chat_id para filtrar depois)
+                todos_normais = await conn.fetch("SELECT chat_id, titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE", categoria)
+                vips = await conn.fetch("SELECT chat_id, titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE AND aprovado = TRUE LIMIT 4", categoria)
                 links_fixos = await conn.fetch("SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", categoria)
 
-                # Busca destinos reais (ignora fakes que tem ID negativo gerado e dono == ADMIN)
+                # Busca destinos reais (ignora fakes que tem ID negativo)
                 destinos = await conn.fetch("SELECT chat_id, ultima_mensagem_id, dono_id, titulo FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE AND semente = FALSE", categoria)
 
                 if not destinos:
@@ -86,7 +88,6 @@ async def disparar_troca_por_categoria():
 
                 nome_cat_formatado = CATEGORIAS_DISPONIVEIS.get(categoria, categoria.upper())
                 
-                # Texto atualizado com a contagem total
                 texto_lista = (
                     f"🔥 **MELHORES CANAIS - {nome_cat_formatado}** 🔥\n\n"
                     f"✨ Conteúdos exclusivos, atualizados e sem censura.\n"
@@ -94,45 +95,60 @@ async def disparar_troca_por_categoria():
                     f"👇 *Escolha abaixo e acesse agora!*"
                 )
 
-                botoes = []
-                for v in vips:
-                    botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=v['invite_link'] or "https://t.me/")])
-                for lf in links_fixos:
-                    botoes.append([InlineKeyboardButton(f"⭐ {lf['titulo']}", url=lf['url'])])
-
-                linha_dupla = []
-                for n in normais:
-                    linha_dupla.append(InlineKeyboardButton(n['titulo'], url=n['invite_link'] or "https://t.me/"))
-                    if len(linha_dupla) == 2:
-                        botoes.append(linha_dupla)
-                        linha_dupla = []
-                if linha_dupla:
-                    botoes.append(linha_dupla)
-
-                botoes.append([InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot.me.username}?start=start")])
-                keyboard = InlineKeyboardMarkup(botoes)
-
                 for dest in destinos:
-                    chat_id = dest['chat_id']
+                    chat_id_destino = dest['chat_id']
                     ultima_msg_id = dest['ultima_mensagem_id']
                     dono_id = dest['dono_id']
                     titulo_canal = dest['titulo']
 
+                    # --- LÓGICA DE ROTAÇÃO E EXCLUSÃO DO PRÓPRIO CANAL ---
+                    # Remove o próprio canal de destino da lista de botões
+                    elegiveis = [c for c in todos_normais if c['chat_id'] != chat_id_destino]
+                    
+                    # Embaralha a lista e pega até 20 canais SÓ para este destino
+                    selecionados = random.sample(elegiveis, min(20, len(elegiveis)))
+
+                    # Monta os botões do zero para cada canal
+                    botoes = []
+                    for v in vips:
+                        # Evita que o VIP apareça na própria lista dele
+                        if v['chat_id'] != chat_id_destino:
+                            botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=v['invite_link'] or "https://t.me/")])
+                            
+                    for lf in links_fixos:
+                        botoes.append([InlineKeyboardButton(f"⭐ {lf['titulo']}", url=lf['url'])])
+
+                    linha_dupla = []
+                    for n in selecionados:
+                        linha_dupla.append(InlineKeyboardButton(n['titulo'], url=n['invite_link'] or "https://t.me/"))
+                        if len(linha_dupla) == 2:
+                            botoes.append(linha_dupla)
+                            linha_dupla = []
+                    if linha_dupla:
+                        botoes.append(linha_dupla)
+
+                    botoes.append([InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot.me.username}?start=start")])
+                    keyboard = InlineKeyboardMarkup(botoes)
+                    # -----------------------------------------------------
+
                     try:
+                        # Tenta apagar a lista anterior
                         if ultima_msg_id:
                             try:
-                                await bot.delete_messages(chat_id=chat_id, message_ids=ultima_msg_id)
+                                await bot.delete_messages(chat_id=chat_id_destino, message_ids=ultima_msg_id)
                             except Exception:
                                 pass
 
+                        # Envia a nova lista
                         nova_msg = await bot.send_message(
-                            chat_id=chat_id,
+                            chat_id=chat_id_destino,
                             text=texto_lista,
                             reply_markup=keyboard,
                             disable_web_page_preview=True
                         )
-                        await conn.execute("UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2", nova_msg.id, chat_id)
-                        logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id}")
+                        await conn.execute("UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2", nova_msg.id, chat_id_destino)
+                        logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id_destino}")
+                        # ... resto do código dos excepts (strikes) continua igual
 
                     except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel) as e:
                         logger.warning(f"🚫 Strike! Sem permissão no canal {chat_id}. Pausando canal.")
