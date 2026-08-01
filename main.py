@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from pyrogram.enums import ChatMemberStatus
-from pyrogram.errors import ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel
+from pyrogram.errors import ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel, PeerIdInvalid
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
@@ -68,8 +68,6 @@ async def disparar_troca_por_categoria():
                 logger.info("⚠️ Nenhuma categoria ativa encontrada para disparo.")
                 return False
 
-            # Pega a contagem total de canais reais + fakes para mostrar na mensagem
-            # ... (código anterior)
             total_canais = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE ativo = TRUE AND aprovado = TRUE")
 
             for cat_row in categorias:
@@ -148,11 +146,10 @@ async def disparar_troca_por_categoria():
                         )
                         await conn.execute("UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2", nova_msg.id, chat_id_destino)
                         logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id_destino}")
-                        # ... resto do código dos excepts (strikes) continua igual
 
-                    except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel) as e:
-                        logger.warning(f"🚫 Strike! Sem permissão no canal {chat_id}. Pausando canal.")
-                        await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
+                    except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel, PeerIdInvalid) as e:
+                        logger.warning(f"🚫 Strike! Sem permissão no canal {chat_id_destino}. Pausando canal. Motivo: {e}")
+                        await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id_destino)
                         try:
                             await bot.send_message(
                                 dono_id,
@@ -163,7 +160,7 @@ async def disparar_troca_por_categoria():
                         except Exception:
                             pass
                     except Exception as e:
-                        logger.error(f"❌ Erro ao enviar lista para o canal {chat_id}: {e}")
+                        logger.error(f"❌ Erro ao enviar lista para o canal {chat_id_destino}: {e}")
 
         logger.info("✅ Ciclo de troca de divulgação concluído com sucesso!")
         return True
@@ -205,7 +202,7 @@ async def monitorar_membros_semanal():
                         except Exception:
                             pass
                             
-                except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel):
+                except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel, PeerIdInvalid):
                     await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
                 except Exception as e:
                     logger.error(f"Erro ao consultar canal {chat_id} na varredura: {e}")
@@ -302,7 +299,7 @@ async def lifespan(app: FastAPI):
         )
 
     # ----------------------------------------------------
-    # NOVO: COMANDO DE IMPORTAÇÃO DE TXT
+    # COMANDO DE IMPORTAÇÃO DE TXT
     # ----------------------------------------------------
     @bot.on_message(filters.command("importar") & filters.private)
     async def importar_fakes(client: Client, message):
@@ -686,6 +683,16 @@ async def lifespan(app: FastAPI):
 
     await bot.start()
     logger.info(f"🤖 Bot @{bot.me.username} Online e pronto!")
+
+    # --- NOVO: Reconstruir o cache de peers para evitar PeerIdInvalid ---
+    logger.info("🔄 Reconstruindo cache de canais na memória...")
+    try:
+        async for dialog in bot.get_dialogs():
+            pass # Apenas iterar pelos diálogos faz o Pyrogram salvar os IDs
+        logger.info("✅ Cache de canais reconstruído com sucesso!")
+    except Exception as e:
+        logger.warning(f"⚠️ Erro ao reconstruir cache: {e}")
+    # --------------------------------------------------------------------
 
     fuso_horario = ZoneInfo("America/Sao_Paulo")
     scheduler.add_job(disparar_troca_por_categoria, CronTrigger(hour=14, minute=0, timezone=fuso_horario))
