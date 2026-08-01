@@ -3,16 +3,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pyrogram import Client
 
-# Importando as configurações e módulos da nossa arquitetura modular
-from config import API_ID, API_HASH, BOT_TOKEN
+# Importando as configurações e módulos
+from config import API_ID, API_HASH, BOT_TOKEN, ADMIN_ID
 from database import init_db, close_db, db_pool
 from rotinas import scheduler, iniciar_agendamentos
 
-# Configuração de Logs
-logging.basicConfig(level=logging.INFO)
+# Configuração de Logs (Forçando a exibição imediata, sem buffer)
+logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger("main")
 
-# Inicializando o Bot do Pyrogram com a pasta "plugins" (Smart Plugins)
 bot = Client(
     "bot_up_canais",
     api_id=API_ID,
@@ -21,25 +20,30 @@ bot = Client(
     plugins=dict(root="plugins")
 )
 
+# 🛑 INTERCEPTADOR GLOBAL: Captura TUDO antes de ir pros plugins
+# O group=-1 força essa função a rodar com prioridade máxima
+@bot.on_message(group=-1)
+async def interceptar_tudo(client, message):
+    user_id = message.from_user.id if message.from_user else "Desconhecido"
+    texto = message.text or "[Mídia/Sem Texto]"
+    logger.info(f"📩 [DEBUG GLOBAL] Mensagem de {user_id}: {texto}")
+    # continue_propagation() é crucial para a mensagem não morrer aqui e seguir para o comandos.py
+    message.continue_propagation() 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ==========================================
-    # PROCESSO DE INICIALIZAÇÃO (STARTUP)
+    # PROCESSO DE INICIALIZAÇÃO
     # ==========================================
-    
-    # 1. Inicia o Pool de conexões do Banco de Dados
     await init_db()
     
-    # 2. Inicia o Bot do Pyrogram
     await bot.start()
     bot_info = await bot.get_me()
     logger.info(f"🤖 Bot @{bot_info.username} Online! (Arquitetura Modular)")
 
-    # 3. Proteção contra PeerIdInvalid (Reconstrução de Cache Inteligente via DB)
-    logger.info("🔄 Reconstruindo cache de canais na memória via Banco de Dados...")
+    logger.info("🔄 Reconstruindo cache de canais...")
     try:
         async with db_pool.acquire() as conn:
-            # Pega apenas os canais reais e ativos para colocar no cache
             canais_reais = await conn.fetch("SELECT chat_id FROM canais WHERE ativo = TRUE AND semente = FALSE")
             sucessos = 0
             for c in canais_reais:
@@ -47,32 +51,35 @@ async def lifespan(app: FastAPI):
                     await bot.get_chat(c['chat_id'])
                     sucessos += 1
                 except Exception:
-                    pass # Se der erro em um (ex: bot foi expulso), apenas ignora e segue pro próximo
-                    
-        logger.info(f"✅ Cache reconstruído! {sucessos} canais validados na memória.")
+                    pass
+        logger.info(f"✅ Cache reconstruído! {sucessos} canais validados.")
     except Exception as e:
         logger.warning(f"⚠️ Erro ao acessar o banco para o cache: {e}")
 
-    # 4. Inicia as rotinas automáticas (APScheduler)
-    iniciar_agendamentos() # Certifique-se de que sua função no rotinas.py se chama assim
+    iniciar_agendamentos()
     scheduler.start()
     logger.info("⏰ Cronograma ativado.")
 
-    yield # Aqui o servidor FastAPI assume e fica rodando
+    # 🔥 TESTE DE FOGO: O bot consegue enviar mensagem?
+    if ADMIN_ID:
+        try:
+            await bot.send_message(ADMIN_ID, "🚀 Servidor reiniciado! O bot está operante. Mande um `/start` agora para testar o interceptador.")
+            logger.info("✅ Mensagem de teste enviada ao Admin com sucesso!")
+        except Exception as e:
+            logger.error(f"❌ Falha ao enviar mensagem ao admin. ADMIN_ID ({ADMIN_ID}) está correto? Erro: {e}")
+
+    yield
 
     # ==========================================
-    # PROCESSO DE DESLIGAMENTO (SHUTDOWN)
+    # PROCESSO DE DESLIGAMENTO
     # ==========================================
     logger.info("🛑 Desligando o sistema...")
     scheduler.shutdown()
     await bot.stop()
     await close_db()
 
-
-# Inicializando o aplicativo Web FastAPI (Essencial para a porta do Railway)
 app = FastAPI(lifespan=lifespan)
 
-# Rota simples de verificação de status para o servidor
 @app.get("/")
 async def health_check():
     return {"status": "Bot UP Canais Online e Operacional (Arquitetura Modular)"}
