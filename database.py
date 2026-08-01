@@ -77,3 +77,6 @@ async def init_db():
     except Exception as e:
         logger.error(f"❌ Erro crítico ao conectar no banco de dados: {e}")
         raise e
+        async def close_db():
+    """Atalho para fechar o pool, mantendo a compatibilidade com o main.py"""
+    await db_pool.close()
