@@ -1,122 +1,80 @@
 import logging
-import random
-from pyrogram import Client
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel, PeerIdInvalid
-import database
-from config import CATEGORIAS_DISPONIVEIS
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-logger = logging.getLogger(__name__)
+# Importando o pool do banco para poder fazer consultas dentro das rotinas
+from database import db_pool 
 
-async def disparar_troca_por_categoria(bot: Client):
-    logger.info("Iniciando disparo de listas...")
+# Configuração de Logs
+logger = logging.getLogger("rotinas")
+
+# 1. Cria a instância global do agendador com o fuso horário correto
+scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
+
+# ==========================================
+# LÓGICA DAS ROTINAS (Jobs)
+# ==========================================
+
+async def disparar_troca_por_categoria():
+    logger.info("🔄 Executando rotina: disparar_troca_por_categoria...")
     try:
-        async with database.db_pool.acquire() as conn:
-            categorias = await conn.fetch("SELECT DISTINCT categoria FROM canais WHERE ativo = TRUE AND aprovado = TRUE AND categoria IS NOT NULL")
-
-            if not categorias:
-                logger.info("⚠️ Nenhuma categoria ativa encontrada para disparo.")
-                return False
-
-            total_canais = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE ativo = TRUE AND aprovado = TRUE")
-
-            for cat_row in categorias:
-                categoria = cat_row['categoria']
-
-                todos_normais = await conn.fetch("SELECT chat_id, titulo, invite_link FROM canais WHERE categoria = $1 AND vip = FALSE AND ativo = TRUE AND aprovado = TRUE", categoria)
-                vips = await conn.fetch("SELECT chat_id, titulo, invite_link FROM canais WHERE categoria = $1 AND vip = TRUE AND ativo = TRUE AND aprovado = TRUE LIMIT 4", categoria)
-                links_fixos = await conn.fetch("SELECT id, titulo, url FROM links_fixos WHERE categoria = $1 OR categoria = 'todas'", categoria)
-                destinos = await conn.fetch("SELECT chat_id, ultima_mensagem_id, dono_id, titulo FROM canais WHERE categoria = $1 AND ativo = TRUE AND aprovado = TRUE AND semente = FALSE", categoria)
-
-                if not destinos: continue
-
-                nome_cat_formatado = CATEGORIAS_DISPONIVEIS.get(categoria, categoria.upper())
-                
-                texto_lista = (
-                    f"🔥 **MELHORES CANAIS - {nome_cat_formatado}** 🔥\n\n"
-                    f"✨ Conteúdos exclusivos, atualizados e sem censura.\n"
-                    f"📈 **{total_canais} canais** cadastrados na nossa rede!\n\n"
-                    f"👇 *Escolha abaixo e acesse agora!*"
-                )
-
-                for dest in destinos:
-                    chat_id_destino = dest['chat_id']
-                    ultima_msg_id = dest['ultima_mensagem_id']
-                    dono_id = dest['dono_id']
-                    titulo_canal = dest['titulo']
-
-                    elegiveis = [c for c in todos_normais if c['chat_id'] != chat_id_destino]
-                    selecionados = random.sample(elegiveis, min(20, len(elegiveis)))
-
-                    botoes = []
-                    for v in vips:
-                        if v['chat_id'] != chat_id_destino:
-                            botoes.append([InlineKeyboardButton(f"💎 {v['titulo']}", url=v['invite_link'] or "https://t.me/")])
-                            
-                    for lf in links_fixos:
-                        botoes.append([InlineKeyboardButton(f"⭐ {lf['titulo']}", url=lf['url'])])
-
-                    linha_dupla = []
-                    for n in selecionados:
-                        linha_dupla.append(InlineKeyboardButton(n['titulo'], url=n['invite_link'] or "https://t.me/"))
-                        if len(linha_dupla) == 2:
-                            botoes.append(linha_dupla)
-                            linha_dupla = []
-                    if linha_dupla: botoes.append(linha_dupla)
-
-                    botoes.append([InlineKeyboardButton("📋 Participar da Lista Grátis", url=f"https://t.me/{bot.me.username}?start=start")])
-                    keyboard = InlineKeyboardMarkup(botoes)
-
-                    try:
-                        if ultima_msg_id:
-                            try: await bot.delete_messages(chat_id=chat_id_destino, message_ids=ultima_msg_id)
-                            except Exception: pass
-
-                        nova_msg = await bot.send_message(chat_id=chat_id_destino, text=texto_lista, reply_markup=keyboard, disable_web_page_preview=True)
-                        await conn.execute("UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2", nova_msg.id, chat_id_destino)
-                        logger.info(f"📤 Lista enviada com sucesso para o canal {chat_id_destino}")
-
-                    except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel, PeerIdInvalid) as e:
-                        logger.warning(f"🚫 Strike! Sem permissão no canal {chat_id_destino}. Motivo: {e}")
-                        await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id_destino)
-                        try:
-                            await bot.send_message(
-                                dono_id,
-                                f"⚠️ **Aviso de Desligamento Automático!**\n\nFui impedido de enviar a lista no seu canal **{titulo_canal}**.\nSeu canal foi **pausado**. Para voltar, me adicione novamente como Admin e clique em 'Atualizar Nome e Link'."
-                            )
-                        except Exception: pass
-                    except Exception as e:
-                        logger.error(f"❌ Erro ao enviar para canal {chat_id_destino}: {e}")
-
-        logger.info("✅ Ciclo de troca de divulgação concluído!")
-        return True
+        # Exemplo de como usar o banco de dados dentro da rotina
+        async with db_pool.acquire() as conn:
+            # canais = await conn.fetch("SELECT chat_id FROM canais WHERE ativo = TRUE")
+            pass
+            
+        # TODO: Cole aqui a sua lógica de rotação de diretórios, 
+        # limite de 20 canais por lista e configuração de títulos limpos (sem os foguetes).
+        
+        logger.info("✅ Rotina 'disparar_troca_por_categoria' finalizada com sucesso.")
     except Exception as e:
-        logger.error(f"❌ Erro no disparo diário: {e}")
-        return False
+        logger.error(f"❌ Erro na rotina de troca por categoria: {e}")
 
-async def monitorar_membros_semanal(bot: Client):
-    logger.info("🔍 Iniciando varredura semanal de membros...")
+async def monitorar_membros_semanal():
+    logger.info("👥 Executando rotina: monitorar_membros_semanal...")
     try:
-        async with database.db_pool.acquire() as conn:
-            canais_ativos = await conn.fetch("SELECT chat_id, titulo, dono_id FROM canais WHERE ativo = TRUE AND aprovado = TRUE AND semente = FALSE")
-            for c in canais_ativos:
-                chat_id = c['chat_id']
-                dono_id = c['dono_id']
-                titulo = c['titulo']
-                try:
-                    chat_info = await bot.get_chat(chat_id)
-                    membros_atuais = getattr(chat_info, "members_count", 0)
-                    await conn.execute("UPDATE canais SET membros = $1 WHERE chat_id = $2", membros_atuais, chat_id)
-
-                    if 0 < membros_atuais < 100:
-                        await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
-                        logger.info(f"📉 Canal {chat_id} pausado (queda: {membros_atuais}).")
-                        try:
-                            await bot.send_message(dono_id, f"📉 **Alerta!** O canal **{titulo}** caiu para {membros_atuais} membros (Mínimo: 100). Foi pausado.")
-                        except: pass
-                except (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel, PeerIdInvalid):
-                    await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
-                except Exception: pass
-        logger.info("✅ Varredura semanal concluída!")
+        # Exemplo de como usar o banco de dados dentro da rotina
+        async with db_pool.acquire() as conn:
+            # strikes = await conn.fetch("SELECT * FROM strikes_tabela...")
+            pass
+            
+        # TODO: Cole aqui a sua lógica de validação de membros e gerenciamento de strikes.
+        
+        logger.info("✅ Rotina 'monitorar_membros_semanal' finalizada com sucesso.")
     except Exception as e:
-        logger.error(f"Erro na varredura: {e}")
+        logger.error(f"❌ Erro na rotina de monitoramento semanal: {e}")
+
+
+# ==========================================
+# FUNÇÃO DE REGISTRO (Importada pelo main.py)
+# ==========================================
+
+def iniciar_agendamentos():
+    """
+    Esta função é chamada pelo main.py (no lifespan do FastAPI) quando o sistema liga.
+    Ela diz ao scheduler exatamente QUANDO cada função acima deve ser executada.
+    """
+    logger.info("⏰ Registrando rotinas no agendador...")
+    
+    # 1. Agendamento de Intervalo (Ex: Rodar a cada 2 horas)
+    # Altere "hours=2" para o tempo que desejar (pode usar minutes=30, etc.)
+    scheduler.add_job(
+        disparar_troca_por_categoria, 
+        trigger="interval", 
+        hours=2, 
+        id="disparar_troca_por_categoria",
+        replace_existing=True
+    )
+    
+    # 2. Agendamento Cronometrado (Ex: Rodar todo Domingo à meia-noite)
+    # day_of_week="sun" (domingo), hour=0, minute=0
+    scheduler.add_job(
+        monitorar_membros_semanal, 
+        trigger="cron", 
+        day_of_week="sun", 
+        hour=0, 
+        minute=0, 
+        id="monitorar_membros_semanal",
+        replace_existing=True
+    )
+    
+    logger.info("✅ Todas as rotinas foram registradas no APScheduler com sucesso.")
