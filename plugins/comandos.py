@@ -96,10 +96,11 @@ async def testar_comando(client, message):
     # Se você tiver restrição de admin, mantenha aqui...
     await message.reply("🔄 Forçando disparo da rotina de troca...")
     
-    # PASSANDO O CLIENT AQUI DENTRO:
-    await disparar_troca_por_categoria(client)
-    
-    await message.reply("✅ Rotina de teste finalizada. Verifique os logs!")
+    try:
+        # PASSANDO O CLIENT AQUI DENTRO:
+        await disparar_troca_por_categoria(client)
+        
+        await message.reply("✅ Rotina de teste finalizada. Verifique os logs!")
     except Exception as e:
         await message.reply_text(f"❌ Falha ao disparar o teste: {e}")
 
