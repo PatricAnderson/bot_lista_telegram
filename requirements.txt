@@ -1,4 +1,5 @@
 fastapi
 uvicorn
 pyTelegramBotAPI
-psycopg2-binary  # (Ou a biblioteca que você usa para o PostgreSQL)
+asyncpg
+apscheduler
