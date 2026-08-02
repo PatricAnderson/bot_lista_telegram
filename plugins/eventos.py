@@ -17,10 +17,10 @@ async def bot_added_to_channel(update):
             membros = await bot.get_chat_member_count(chat_id)
             
             if membros < 100:
-                await bot.send_message(user_id, f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O mínimo é 100.", parse_mode="Markdown")[cite: 12]
+                await bot.send_message(user_id, f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O mínimo é 100.", parse_mode="Markdown")
                 return
 
-            invite_link = chat_info.invite_link or (f"https://t.me/{chat_info.username}" if chat_info.username else "")[cite: 12]
+            invite_link = chat_info.invite_link or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
 
             async with database.db_pool.acquire() as conn:
                 await conn.execute("""
@@ -29,7 +29,7 @@ async def bot_added_to_channel(update):
                     ON CONFLICT (chat_id) DO UPDATE 
                     SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
                         invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE, semente = FALSE
-                """, chat_id, chat_title, user_id, invite_link, membros)[cite: 12]
+                """, chat_id, chat_title, user_id, invite_link, membros)
 
             markup = InlineKeyboardMarkup()
             chaves = list(CATEGORIAS_DISPONIVEIS.keys())
@@ -39,5 +39,5 @@ async def bot_added_to_channel(update):
                     linha.append(InlineKeyboardButton(CATEGORIAS_DISPONIVEIS[chaves[i+1]], callback_data=f"setcat_{chat_id}_{chaves[i+1]}"))
                 markup.row(*linha)
 
-            await bot.send_message(user_id, f"✅ Adicionado em **{chat_title}**!\nSelecione a categoria:", reply_markup=markup, parse_mode="Markdown")[cite: 12]
+            await bot.send_message(user_id, f"✅ Adicionado em **{chat_title}**!\nSelecione a categoria:", reply_markup=markup, parse_mode="Markdown")
         except Exception: pass
