@@ -1,6 +1,7 @@
 import logging
 import random
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import db_pool 
 from config import CATEGORIAS_DISPONIVEIS, bot
 
@@ -10,7 +11,6 @@ scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 async def disparar_troca_por_categoria(client_bot=None):
     logger.info("🔄 Executando rotina: disparar_troca_por_categoria (12h/20h)...")
     
-    # Em caso de falha na passagem, utiliza o bot importado do config
     client_bot = client_bot or bot
 
     if not client_bot:
@@ -18,27 +18,49 @@ async def disparar_troca_por_categoria(client_bot=None):
         return
 
     try:
+        # Pega o username do bot para criar o botão de "Participar da Lista"
+        try:
+            bot_info = await client_bot.get_me()
+            bot_link = f"https://t.me/{bot_info.username}"
+        except:
+            bot_link = "https://t.me/"
+
         async with db_pool.acquire() as conn:
             canais = await conn.fetch("""
                 SELECT chat_id, titulo, invite_link, categoria, semente 
                 FROM canais 
                 WHERE ativo = TRUE AND aprovado = TRUE
             """)
+            
             canais_destino = await conn.fetch("""
                 SELECT chat_id, categoria, ultima_mensagem_id 
                 FROM canais 
-                WHERE ativo = TRUE AND aprovado = TRUE
+                WHERE ativo = TRUE AND aprovado = TRUE AND semente = FALSE
             """)
+
+            # Puxa os links fixos para colocar no topo dos botões
+            links_fixos_db = await conn.fetch("SELECT titulo, url, categoria FROM links_fixos")
 
             if not canais or not canais_destino:
                 logger.warning(f"⚠️ Canais insuficientes no banco.")
                 return
 
+        # Organiza os canais por categoria
         canais_por_categoria = {cat: [] for cat in CATEGORIAS_DISPONIVEIS.keys()}
         for c in canais:
             cat = c['categoria'] if c['categoria'] in canais_por_categoria else "geral"
             canais_por_categoria[cat].append(c)
 
+        # Organiza os links fixos por categoria
+        links_fixos_por_categoria = {cat: [] for cat in CATEGORIAS_DISPONIVEIS.keys()}
+        links_fixos_todas = []
+        for lf in links_fixos_db:
+            if lf['categoria'] == 'todas':
+                links_fixos_todas.append(lf)
+            elif lf['categoria'] in links_fixos_por_categoria:
+                links_fixos_por_categoria[lf['categoria']].append(lf)
+
+        # Inicia o envio por destino
         for destino in canais_destino:
             chat_id_destino = destino['chat_id']
             cat_destino = destino['categoria'] if destino['categoria'] in canais_por_categoria else "geral"
@@ -47,9 +69,9 @@ async def disparar_troca_por_categoria(client_bot=None):
             if ultima_msg_id:
                 try:
                     await client_bot.delete_message(chat_id_destino, ultima_msg_id)
-                    logger.info(f"🗑️ Lista anterior (ID: {ultima_msg_id}) apagada no canal {chat_id_destino}")
+                    logger.info(f"🗑️ Lista apagada no canal {chat_id_destino}")
                 except Exception as del_err:
-                    logger.warning(f"⚠️ Não foi possível apagar a lista anterior: {del_err}")
+                    logger.warning(f"⚠️ Lista anterior não encontrada no canal {chat_id_destino}: Ignorando...")
 
             pool_canais = list(canais_por_categoria.get(cat_destino, canais_por_categoria.get("geral", [])))
             
@@ -68,16 +90,37 @@ async def disparar_troca_por_categoria(client_bot=None):
             if not lote_atual:
                 continue
 
-            texto_lista = f"📋 **Lista de Canais Parceiros - {CATEGORIAS_DISPONIVEIS.get(cat_destino, 'Geral')}**\n\n"
-            for canal in lote_atual:
-                link = canal['invite_link'] or "#"
-                texto_lista += f"• [{canal['titulo']}]({link})\n"
+            # Montagem do visual da mensagem e botões
+            texto_lista = f"💦 **OS MELHORES CANAIS - {CATEGORIAS_DISPONIVEIS.get(cat_destino, 'Geral').upper()}!**\n\n🔥 Acesse agora e divirta-se!"
+            markup = InlineKeyboardMarkup()
 
-            texto_lista += f"\n🤖 Divulgue seu canal você também!"
+            # 1. Links Fixos (Máximo 2, priorizando os da categoria específica, depois os globais)
+            fixos_deste_nicho = links_fixos_por_categoria.get(cat_destino, []) + links_fixos_todas
+            for fixo in fixos_deste_nicho[:2]:
+                markup.row(InlineKeyboardButton(text=fixo['titulo'], url=fixo['url']))
+
+            # 2. Botoes dos Canais (2 por linha para ficar compacto igual à imagem)
+            botoes_canais = []
+            for canal in lote_atual:
+                link = canal['invite_link'] or "https://t.me/"
+                botoes_canais.append(InlineKeyboardButton(text=canal['titulo'], url=link))
+
+            for i in range(0, len(botoes_canais), 2):
+                if i + 1 < len(botoes_canais):
+                    markup.row(botoes_canais[i], botoes_canais[i+1])
+                else:
+                    markup.row(botoes_canais[i])
+
+            # 3. Botão de Cadastro no Bot (Última linha)
+            markup.row(InlineKeyboardButton(text="📋 Participar da Lista", url=bot_link))
 
             try:
-                # Mudança Pyrogram -> Telebot
-                msg_enviada = await client_bot.send_message(chat_id_destino, texto_lista, parse_mode="Markdown")
+                msg_enviada = await client_bot.send_message(
+                    chat_id_destino, 
+                    texto_lista, 
+                    reply_markup=markup, 
+                    parse_mode="Markdown"
+                )
                 
                 async with db_pool.acquire() as conn:
                     await conn.execute(
@@ -97,7 +140,7 @@ async def monitorar_membros_semanal():
     try:
         async with db_pool.acquire() as conn:
             pass
-        logger.info("✅ Rotina 'monitorar_membros_semanal' finalizada com sucesso.")
+        logger.info("✅ Rotina finalizada.")
     except Exception as e:
         logger.error(f"❌ Erro na rotina: {e}")
 
