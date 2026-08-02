@@ -1,12 +1,11 @@
-from pyrogram import Client
-from pyrogram.types import ChatMemberUpdated, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ChatMemberStatus
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import database
-from config import CATEGORIAS_DISPONIVEIS
+from config import bot, CATEGORIAS_DISPONIVEIS
 
-@Client.on_chat_member_updated()
-async def bot_added_to_channel(client: Client, update: ChatMemberUpdated):
-    if update.new_chat_member and update.new_chat_member.user.is_self and update.new_chat_member.status == ChatMemberStatus.ADMINISTRATOR:
+@bot.my_chat_member_handler()
+async def bot_added_to_channel(update):
+    new_status = update.new_chat_member.status
+    if new_status == 'administrator':
         chat_id = update.chat.id
         chat_title = update.chat.title
         user_id = update.from_user.id if update.from_user else None
@@ -14,14 +13,14 @@ async def bot_added_to_channel(client: Client, update: ChatMemberUpdated):
         if not user_id: return
         
         try:
-            chat_info = await client.get_chat(chat_id)
-            membros = getattr(chat_info, "members_count", 0)
+            chat_info = await bot.get_chat(chat_id)
+            membros = await bot.get_chat_member_count(chat_id)
             
             if membros < 100:
-                await client.send_message(user_id, f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O mínimo é 100.")
+                await bot.send_message(user_id, f"❌ O canal **{chat_title}** possui apenas {membros} inscritos. O mínimo é 100.", parse_mode="Markdown")[cite: 12]
                 return
 
-            invite_link = chat_info.invite_link or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
+            invite_link = chat_info.invite_link or (f"https://t.me/{chat_info.username}" if chat_info.username else "")[cite: 12]
 
             async with database.db_pool.acquire() as conn:
                 await conn.execute("""
@@ -30,15 +29,15 @@ async def bot_added_to_channel(client: Client, update: ChatMemberUpdated):
                     ON CONFLICT (chat_id) DO UPDATE 
                     SET titulo = EXCLUDED.titulo, dono_id = EXCLUDED.dono_id, 
                         invite_link = EXCLUDED.invite_link, membros = EXCLUDED.membros, ativo = TRUE, semente = FALSE
-                """, chat_id, chat_title, user_id, invite_link, membros)
+                """, chat_id, chat_title, user_id, invite_link, membros)[cite: 12]
 
-            botoes = []
-            linha = []
-            for k, v in CATEGORIAS_DISPONIVEIS.items():
-                linha.append(InlineKeyboardButton(v, callback_data=f"setcat_{chat_id}_{k}"))
-                if len(linha) == 2:
-                    botoes.append(linha); linha = []
-            if linha: botoes.append(linha)
+            markup = InlineKeyboardMarkup()
+            chaves = list(CATEGORIAS_DISPONIVEIS.keys())
+            for i in range(0, len(chaves), 2):
+                linha = [InlineKeyboardButton(CATEGORIAS_DISPONIVEIS[chaves[i]], callback_data=f"setcat_{chat_id}_{chaves[i]}")]
+                if i + 1 < len(chaves):
+                    linha.append(InlineKeyboardButton(CATEGORIAS_DISPONIVEIS[chaves[i+1]], callback_data=f"setcat_{chat_id}_{chaves[i+1]}"))
+                markup.row(*linha)
 
-            await client.send_message(user_id, f"✅ Adicionado em **{chat_title}**!\nSelecione a categoria:", reply_markup=InlineKeyboardMarkup(botoes))
+            await bot.send_message(user_id, f"✅ Adicionado em **{chat_title}**!\nSelecione a categoria:", reply_markup=markup, parse_mode="Markdown")[cite: 12]
         except Exception: pass
