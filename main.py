@@ -22,7 +22,7 @@ logger = logging.getLogger("main")
 STRING_SESSAO = os.getenv("SESSION_STRING")
 
 if STRING_SESSAO:
-    logger.info("🔑 Configurando Pyrogram com SESSION_STRING (Memória/Nuveem)...")
+    logger.info("🔑 Configurando Pyrogram com SESSION_STRING (Memória/Nuvem)...")
     bot = Client(
         "bot_up_canais",
         api_id=API_ID,
@@ -31,12 +31,13 @@ if STRING_SESSAO:
         plugins=dict(root="plugins")
     )
 else:
-    logger.info("🔑 Configurando Pyrogram com BOT_TOKEN (Sessão Local)...")
+    logger.info("🔑 Configurando Pyrogram com BOT_TOKEN (Fallback na Memória)...")
     bot = Client(
         "bot_up_canais",
         api_id=API_ID,
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
+        in_memory=True, # Adicionado aqui também para evitar a criação de arquivo físico
         plugins=dict(root="plugins")
     )
 
