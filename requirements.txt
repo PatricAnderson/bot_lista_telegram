@@ -1,8 +1,4 @@
 fastapi
 uvicorn
-pyrogram
-TgCrypto
-asyncpg
-apscheduler
-tzdata
-requests
+pyTelegramBotAPI
+psycopg2-binary  # (Ou a biblioteca que você usa para o PostgreSQL)
