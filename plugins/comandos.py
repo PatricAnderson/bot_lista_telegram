@@ -129,7 +129,7 @@ async def capturar_texto_admin(message):
                 await conn.execute(
                     "INSERT INTO links_fixos (titulo, url, categoria) VALUES ($1, $2, $3)", 
                     estado["titulo"], texto, estado["categoria"]
-                )[cite: 11]
+                )
             del admin_estados[user_id]
             markup = InlineKeyboardMarkup()
             markup.row(InlineKeyboardButton("⬅️ Painel Admin", callback_data="admin_painel"))
