@@ -53,7 +53,7 @@ async def start_command(message):
 @bot.message_handler(commands=['importar'])
 async def importar_fakes(message):
     user_id = message.from_user.id
-    if ADMIN_ID and user_id != ADMIN_ID: return[cite: 11]
+    if ADMIN_ID and user_id != ADMIN_ID: return
         
     if not message.reply_to_message or not message.reply_to_message.document:
         await bot.reply_to(message, "⚠️ Responda a um arquivo `.txt` com: `/importar <categoria>`", parse_mode="Markdown")[cite: 11]
