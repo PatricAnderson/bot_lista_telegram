@@ -91,13 +91,15 @@ async def admin_command(client: Client, message):
     ])
     await message.reply_text("🛠️ **Painel de Administração**", reply_markup=keyboard)
 
-@Client.on_message(filters.command("testar") & filters.private)
-async def testar_comando(client: Client, message):
-    if ADMIN_ID and message.from_user.id != ADMIN_ID: return
-    await message.reply_text("🚀 Disparando teste...")
-    try:
-        await disparar_troca_por_categoria()
-        await message.reply_text("✅ Comando de teste disparado com sucesso no servidor!")
+@Client.on_message(filters.command("testar"))
+async def testar_comando(client, message):
+    # Se você tiver restrição de admin, mantenha aqui...
+    await message.reply("🔄 Forçando disparo da rotina de troca...")
+    
+    # PASSANDO O CLIENT AQUI DENTRO:
+    await disparar_troca_por_categoria(client)
+    
+    await message.reply("✅ Rotina de teste finalizada. Verifique os logs!")
     except Exception as e:
         await message.reply_text(f"❌ Falha ao disparar o teste: {e}")
 
