@@ -1,193 +1,199 @@
-from pyrogram import Client
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import ChatWriteForbidden, ChatAdminRequired
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import database
-from config import ADMIN_ID, CATEGORIAS_DISPONIVEIS, admin_estados
+from config import bot, ADMIN_ID, CATEGORIAS_DISPONIVEIS, admin_estados
 
-@Client.on_callback_query()
-async def callback_handler(client: Client, callback_query):
-    data = callback_query.data
-    user_id = callback_query.from_user.id
+@bot.callback_query_handler(func=lambda call: True)
+async def callback_handler(call):
+    data = call.data
+    user_id = call.from_user.id
+    chat_id_msg = call.message.chat.id
+    msg_id = call.message.message_id
     
     if data == "conta":
-        await callback_query.answer("Sua conta está ativa na nossa rede!", show_alert=True)
+        await bot.answer_callback_query(call.id, "Sua conta está ativa na nossa rede!", show_alert=True)[cite: 10]
 
     elif data == "admin_painel":
         if ADMIN_ID and user_id != ADMIN_ID: return
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏳ Canais Pendentes", callback_data="admin_pendentes")],
-            [InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink")],
-            [InlineKeyboardButton("📋 Links Fixos Cadastrados", callback_data="admin_listlinks")],
-            [InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio")]
-        ])
-        await callback_query.message.edit_text("🛠️ **Painel de Administração**", reply_markup=keyboard)
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("⏳ Canais Pendentes", callback_data="admin_pendentes"))[cite: 10]
+        markup.row(InlineKeyboardButton("➕ Adicionar Link Fixo", callback_data="admin_addlink"))[cite: 10]
+        markup.row(InlineKeyboardButton("📋 Links Fixos Cadastrados", callback_data="admin_listlinks"))[cite: 10]
+        markup.row(InlineKeyboardButton("⬅️ Voltar ao Início", callback_data="voltar_inicio"))[cite: 10]
+        await bot.edit_message_text("🛠️ **Painel de Administração**", chat_id_msg, msg_id, reply_markup=markup, parse_mode="Markdown")[cite: 10]
 
     elif data == "admin_pendentes":
         if ADMIN_ID and user_id != ADMIN_ID: return
         async with database.db_pool.acquire() as conn:
-            pendentes = await conn.fetch("SELECT chat_id, titulo, categoria, membros FROM canais WHERE aprovado = FALSE AND ativo = TRUE")
+            pendentes = await conn.fetch("SELECT chat_id, titulo, categoria, membros FROM canais WHERE aprovado = FALSE AND ativo = TRUE")[cite: 10]
 
         if not pendentes:
-            return await callback_query.message.edit_text("🎉 Nenhum canal pendente!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel")]]))
+            markup = InlineKeyboardMarkup()
+            markup.row(InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel"))
+            return await bot.edit_message_text("🎉 Nenhum canal pendente!", chat_id_msg, msg_id, reply_markup=markup)[cite: 10]
 
-        texto = "⏳ **Canais Aguardando Aprovação:**\n\n"
-        botoes = []
+        texto = "⏳ **Canais Aguardando Aprovação:**\n\n"[cite: 10]
+        markup = InlineKeyboardMarkup()
         for p in pendentes:
-            texto += f"• **{p['titulo']}**\n  └ Cat: {CATEGORIAS_DISPONIVEIS.get(p['categoria'], '')} | {p['membros']} membros\n\n"
-            botoes.append([
-                InlineKeyboardButton(f"✅ {p['titulo'][:15]}", callback_data=f"aprovar_{p['chat_id']}"),
+            texto += f"• **{p['titulo']}**\n  └ Cat: {CATEGORIAS_DISPONIVEIS.get(p['categoria'], '')} | {p['membros']} membros\n\n"[cite: 10]
+            markup.row(
+                InlineKeyboardButton(f"✅ {p['titulo'][:15]}", callback_data=f"aprovar_{p['chat_id']}"),[cite: 10]
                 InlineKeyboardButton(f"❌", callback_data=f"rejeitar_{p['chat_id']}")
-            ])
-        botoes.append([InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel")])
-        await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
+            )
+        markup.row(InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel"))
+        await bot.edit_message_text(texto, chat_id_msg, msg_id, reply_markup=markup, parse_mode="Markdown")[cite: 10]
 
     elif data.startswith("aprovar_"):
         if ADMIN_ID and user_id != ADMIN_ID: return
-        chat_id = int(data.split("_")[1])
+        chat_id = int(data.split("_")[1])[cite: 10]
         async with database.db_pool.acquire() as conn:
-            canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE, ativo = TRUE WHERE chat_id = $1 RETURNING categoria, dono_id, titulo", chat_id)
+            canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE, ativo = TRUE WHERE chat_id = $1 RETURNING categoria, dono_id, titulo", chat_id)[cite: 10]
             if canal:
-                await conn.execute("DELETE FROM canais WHERE chat_id IN (SELECT chat_id FROM canais WHERE semente = TRUE AND categoria = $1 LIMIT 1)", canal['categoria'])
-        await callback_query.answer("✅ Aprovado!", show_alert=True)
+                await conn.execute("DELETE FROM canais WHERE chat_id IN (SELECT chat_id FROM canais WHERE semente = TRUE AND categoria = $1 LIMIT 1)", canal['categoria'])[cite: 10]
+        await bot.answer_callback_query(call.id, "✅ Aprovado!", show_alert=True)[cite: 10]
         if canal:
-            try: await client.send_message(canal['dono_id'], f"🎉 Canal **{canal['titulo']}** aprovado!")
+            try: await bot.send_message(canal['dono_id'], f"🎉 Canal **{canal['titulo']}** aprovado!", parse_mode="Markdown")
             except: pass
-        callback_query.data = "admin_pendentes"
-        return await callback_handler(client, callback_query)
+        call.data = "admin_pendentes"
+        return await callback_handler(call)
 
     elif data.startswith("rejeitar_"):
         if ADMIN_ID and user_id != ADMIN_ID: return
         chat_id = int(data.split("_")[1])
         async with database.db_pool.acquire() as conn:
-            await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)
-        await callback_query.answer("❌ Rejeitado.", show_alert=True)
-        callback_query.data = "admin_pendentes"
-        return await callback_handler(client, callback_query)
+            await conn.execute("UPDATE canais SET ativo = FALSE WHERE chat_id = $1", chat_id)[cite: 10]
+        await bot.answer_callback_query(call.id, "❌ Rejeitado.", show_alert=True)[cite: 10]
+        call.data = "admin_pendentes"
+        return await callback_handler(call)
 
     elif data == "admin_addlink":
         if ADMIN_ID and user_id != ADMIN_ID: return
-        botoes = [[InlineKeyboardButton("🌐 TODAS AS CATEGORIAS", callback_data="admaddcat_todas")]]
-        linha = []
-        for k, v in CATEGORIAS_DISPONIVEIS.items():
-            linha.append(InlineKeyboardButton(v, callback_data=f"admaddcat_{k}"))
-            if len(linha) == 2:
-                botoes.append(linha); linha = []
-        if linha: botoes.append(linha)
-        await callback_query.message.edit_text("Selecione a categoria alvo:", reply_markup=InlineKeyboardMarkup(botoes))
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("🌐 TODAS AS CATEGORIAS", callback_data="admaddcat_todas"))[cite: 10]
+        
+        chaves = list(CATEGORIAS_DISPONIVEIS.keys())
+        for i in range(0, len(chaves), 2):
+            linha = [InlineKeyboardButton(CATEGORIAS_DISPONIVEIS[chaves[i]], callback_data=f"admaddcat_{chaves[i]}")]
+            if i + 1 < len(chaves):
+                linha.append(InlineKeyboardButton(CATEGORIAS_DISPONIVEIS[chaves[i+1]], callback_data=f"admaddcat_{chaves[i+1]}"))
+            markup.row(*linha)
+            
+        await bot.edit_message_text("Selecione a categoria alvo:", chat_id_msg, msg_id, reply_markup=markup)[cite: 10]
 
     elif data.startswith("admaddcat_"):
         if ADMIN_ID and user_id != ADMIN_ID: return
         cat = data.split("_", 1)[1]
-        admin_estados[user_id] = {"categoria": cat, "etapa": "aguardando_titulo"}
-        await callback_query.message.edit_text(f"✍️ Alvo: {cat}\nEnvie o **Título**:")
+        admin_estados[user_id] = {"categoria": cat, "etapa": "aguardando_titulo"}[cite: 10]
+        await bot.edit_message_text(f"✍️ Alvo: {cat}\nEnvie o **Título**:", chat_id_msg, msg_id, parse_mode="Markdown")[cite: 10]
 
     elif data == "admin_listlinks":
         if ADMIN_ID and user_id != ADMIN_ID: return
         async with database.db_pool.acquire() as conn:
-            links = await conn.fetch("SELECT id, titulo, url, categoria FROM links_fixos")
+            links = await conn.fetch("SELECT id, titulo, url, categoria FROM links_fixos")[cite: 10]
         texto = "📋 **Links:**\n\n"
-        botoes = []
+        markup = InlineKeyboardMarkup()
         for l in links:
-            texto += f"• {l['titulo']} ({l['categoria']})\n"
-            botoes.append([InlineKeyboardButton(f"🗑️ Remover {l['titulo'][:15]}", callback_data=f"admdel_{l['id']}")])
-        botoes.append([InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel")])
-        await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
+            texto += f"• {l['titulo']} ({l['categoria']})\n"[cite: 10]
+            markup.row(InlineKeyboardButton(f"🗑️ Remover {l['titulo'][:15]}", callback_data=f"admdel_{l['id']}"))[cite: 10]
+        markup.row(InlineKeyboardButton("⬅️ Voltar", callback_data="admin_painel"))
+        await bot.edit_message_text(texto, chat_id_msg, msg_id, reply_markup=markup, parse_mode="Markdown")[cite: 10]
 
     elif data.startswith("admdel_"):
         if ADMIN_ID and user_id != ADMIN_ID: return
         link_id = int(data.split("_")[1])
-        async with database.db_pool.acquire() as conn: await conn.execute("DELETE FROM links_fixos WHERE id = $1", link_id)
-        await callback_query.answer("Removido!", show_alert=True)
-        callback_query.data = "admin_listlinks"
-        return await callback_handler(client, callback_query)
+        async with database.db_pool.acquire() as conn: await conn.execute("DELETE FROM links_fixos WHERE id = $1", link_id)[cite: 10]
+        await bot.answer_callback_query(call.id, "Removido!", show_alert=True)[cite: 10]
+        call.data = "admin_listlinks"
+        return await callback_handler(call)
 
     elif data == "meus_canais" or data.startswith("pagcanais_"):
         partes = data.split("_")
-        offset = 0
-        if len(partes) > 1 and partes[-1].isdigit():
-            offset = int(partes[-1])
+        offset = int(partes[-1]) if len(partes) > 1 and partes[-1].isdigit() else 0[cite: 10]
         
         async with database.db_pool.acquire() as conn:
-            canais = await conn.fetch("SELECT chat_id, titulo, ativo, aprovado FROM canais WHERE dono_id = $1 LIMIT 5 OFFSET $2", user_id, offset)
-            total = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1", user_id)
+            canais = await conn.fetch("SELECT chat_id, titulo, ativo, aprovado FROM canais WHERE dono_id = $1 LIMIT 5 OFFSET $2", user_id, offset)[cite: 10]
+            total = await conn.fetchval("SELECT COUNT(*) FROM canais WHERE dono_id = $1", user_id)[cite: 10]
 
-        if not canais: return await callback_query.message.edit_text("Você não possui canais.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_inicio")]]))
+        markup = InlineKeyboardMarkup()
+        if not canais:
+            markup.row(InlineKeyboardButton("⬅️ Voltar", callback_data="voltar_inicio"))[cite: 10]
+            return await bot.edit_message_text("Você não possui canais.", chat_id_msg, msg_id, reply_markup=markup)[cite: 10]
 
-        texto = f"📢 **Seus Canais** ({total}):\n\n"
-        botoes = []
+        texto = f"📢 **Seus Canais** ({total}):\n\n"[cite: 10]
         for c in canais:
-            status = "✅" if c['ativo'] and c['aprovado'] else ("⏳" if c['ativo'] else "❌")
+            status = "✅" if c['ativo'] and c['aprovado'] else ("⏳" if c['ativo'] else "❌")[cite: 10]
             texto += f"• {c['titulo']} [{status}]\n"
-            botoes.append([InlineKeyboardButton(f"⚙️ Gerenciar: {c['titulo'][:15]}", callback_data=f"gerenciar_{c['chat_id']}")])
+            markup.row(InlineKeyboardButton(f"⚙️ Gerenciar: {c['titulo'][:15]}", callback_data=f"gerenciar_{c['chat_id']}"))[cite: 10]
 
         nav = []
-        if offset > 0: nav.append(InlineKeyboardButton("⬅️", callback_data=f"pagcanais_{offset - 5}"))
-        if offset + 5 < total: nav.append(InlineKeyboardButton("➡️", callback_data=f"pagcanais_{offset + 5}"))
-        if nav: botoes.append(nav)
-        botoes.append([InlineKeyboardButton("⬅️ Início", callback_data="voltar_inicio")])
-        await callback_query.message.edit_text(texto, reply_markup=InlineKeyboardMarkup(botoes))
+        if offset > 0: nav.append(InlineKeyboardButton("⬅️", callback_data=f"pagcanais_{offset - 5}"))[cite: 10]
+        if offset + 5 < total: nav.append(InlineKeyboardButton("➡️", callback_data=f"pagcanais_{offset + 5}"))[cite: 10]
+        if nav: markup.row(*nav)
+        markup.row(InlineKeyboardButton("⬅️ Início", callback_data="voltar_inicio"))
+        
+        await bot.edit_message_text(texto, chat_id_msg, msg_id, reply_markup=markup, parse_mode="Markdown")[cite: 10]
 
     elif data.startswith("gerenciar_"):
         chat_id = int(data.split("_")[1])
         async with database.db_pool.acquire() as conn:
-            canal = await conn.fetchrow("SELECT * FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
+            canal = await conn.fetchrow("SELECT * FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)[cite: 10]
         if not canal: return
-        texto = f"⚙️ {canal['titulo']}\nMembros: {canal['membros']}\nLink: {canal['invite_link']}"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Atualizar e Ativar", callback_data=f"atualizar_{chat_id}")],
-            [InlineKeyboardButton("🗑️ Excluir", callback_data=f"remover_{chat_id}")],
-            [InlineKeyboardButton("⬅️ Voltar", callback_data="meus_canais")]
-        ])
-        await callback_query.message.edit_text(texto, reply_markup=kb)
+        texto = f"⚙️ {canal['titulo']}\nMembros: {canal['membros']}\nLink: {canal['invite_link']}"[cite: 10]
+        
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("🔄 Atualizar e Ativar", callback_data=f"atualizar_{chat_id}"))[cite: 10]
+        markup.row(InlineKeyboardButton("🗑️ Excluir", callback_data=f"remover_{chat_id}"))[cite: 10]
+        markup.row(InlineKeyboardButton("⬅️ Voltar", callback_data="meus_canais"))[cite: 10]
+        await bot.edit_message_text(texto, chat_id_msg, msg_id, reply_markup=markup)[cite: 10]
 
-    # --- NOVO BLOCO ATUALIZADO ---
     elif data.startswith("atualizar_"):
-        chat_id = int(data.split("_")[1])
+        chat_id = int(data.split("_")[1])[cite: 10]
         try:
-            chat_info = await client.get_chat(chat_id)
-            novos_membros = getattr(chat_info, "members_count", 0)
-            if novos_membros < 100: return await callback_query.answer("Mínimo de 100 membros exigido.", show_alert=True)
-            link = chat_info.invite_link or (f"https://t.me/{chat_info.username}" if chat_info.username else "")
+            chat_info = await bot.get_chat(chat_id)
+            novos_membros = await bot.get_chat_member_count(chat_id)
+            if novos_membros < 100: 
+                return await bot.answer_callback_query(call.id, "Mínimo de 100 membros exigido.", show_alert=True)[cite: 10]
+                
+            link = chat_info.invite_link or (f"https://t.me/{chat_info.username}" if chat_info.username else "")[cite: 10]
             
             async with database.db_pool.acquire() as conn:
-                await conn.execute("UPDATE canais SET titulo = $1, invite_link = $2, membros = $3, ativo = TRUE WHERE chat_id = $4", chat_info.title, link, novos_membros, chat_id)
-            await callback_query.answer("Atualizado com sucesso!", show_alert=True)
-            callback_query.data = f"gerenciar_{chat_id}"
-            return await callback_handler(client, callback_query)
+                await conn.execute("UPDATE canais SET titulo = $1, invite_link = $2, membros = $3, ativo = TRUE WHERE chat_id = $4", chat_info.title, link, novos_membros, chat_id)[cite: 10]
+            await bot.answer_callback_query(call.id, "Atualizado com sucesso!", show_alert=True)[cite: 10]
+            call.data = f"gerenciar_{chat_id}"
+            return await callback_handler(call)
             
-        except ValueError:
-            # Captura o erro de Peer ID Invalid (Amnésia da memória)
-            await callback_query.answer("⚠️ Bot perdeu o acesso ao canal. Leia a mensagem!", show_alert=True)
-            await client.send_message(
+        except Exception as e:
+            await bot.answer_callback_query(call.id, "⚠️ Bot perdeu o acesso ao canal ou precisa de admin!", show_alert=True)[cite: 10]
+            await bot.send_message(
                 user_id,
                 "⚠️ **Sincronização Necessária!**\n\n"
                 "Como o sistema foi reiniciado, o bot esqueceu a chave de acesso deste canal.\n"
-                "👉 **Para resolver:** Vá no canal, **encaminhe qualquer mensagem de lá para cá** e depois clique em 'Atualizar' novamente!"
-            )
-        except ChatWriteForbidden: 
-            await callback_query.answer("O bot precisa ser Admin no canal!", show_alert=True)
-        except Exception as e:
-            await callback_query.answer("Erro ao acessar canal. Tente remover e adicionar o bot lá novamente.", show_alert=True)
-    # -----------------------------
+                "👉 **Para resolver:** Vá no canal, **encaminhe qualquer mensagem de lá para cá** e depois clique em 'Atualizar' novamente!",
+                parse_mode="Markdown"
+            )[cite: 10]
 
     elif data.startswith("remover_"):
         chat_id = int(data.split("_")[1])
-        async with database.db_pool.acquire() as conn: await conn.execute("DELETE FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
-        await callback_query.answer("Apagado!", show_alert=True)
-        callback_query.data = "meus_canais"
-        return await callback_handler(client, callback_query)
+        async with database.db_pool.acquire() as conn: await conn.execute("DELETE FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)[cite: 10]
+        await bot.answer_callback_query(call.id, "Apagado!", show_alert=True)[cite: 10]
+        call.data = "meus_canais"
+        return await callback_handler(call)
 
     elif data.startswith("setcat_"):
-        chat_id, cat = int(data.split("_")[1]), data.split("_")[2]
-        async with database.db_pool.acquire() as conn: await conn.execute("UPDATE canais SET categoria = $1 WHERE chat_id = $2", cat, chat_id)
-        await callback_query.message.edit_text(f"Categoria `{cat}` salva! Aguarde aprovação.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Início", callback_data="voltar_inicio")]]))
+        chat_id, cat = int(data.split("_")[1]), data.split("_")[2][cite: 10]
+        async with database.db_pool.acquire() as conn: await conn.execute("UPDATE canais SET categoria = $1 WHERE chat_id = $2", cat, chat_id)[cite: 10]
+        
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("Início", callback_data="voltar_inicio"))[cite: 10]
+        await bot.edit_message_text(f"Categoria `{cat}` salva! Aguarde aprovação.", chat_id_msg, msg_id, reply_markup=markup, parse_mode="Markdown")[cite: 10]
         
         if ADMIN_ID:
-            try: await client.send_message(ADMIN_ID, f"🔔 Novo canal pendente. ID: {chat_id}")
+            try: await bot.send_message(ADMIN_ID, f"🔔 Novo canal pendente. ID: {chat_id}")[cite: 10]
             except: pass
 
     elif data == "voltar_inicio":
-        if user_id in admin_estados: del admin_estados[user_id]
-        kb = [[InlineKeyboardButton("📢 Meus Canais", callback_data="meus_canais")]]
-        if ADMIN_ID and user_id == ADMIN_ID: kb.insert(0, [InlineKeyboardButton("🛠️ Painel Admin", callback_data="admin_painel")])
-        await callback_query.message.edit_text("Menu Principal", reply_markup=InlineKeyboardMarkup(kb))
+        if user_id in admin_estados: del admin_estados[user_id][cite: 10]
+        markup = InlineKeyboardMarkup()
+        if ADMIN_ID and user_id == ADMIN_ID: 
+            markup.row(InlineKeyboardButton("🛠️ Painel Admin", callback_data="admin_painel"))[cite: 10]
+        markup.row(InlineKeyboardButton("📢 Meus Canais", callback_data="meus_canais"))[cite: 10]
+        await bot.edit_message_text("Menu Principal", chat_id_msg, msg_id, reply_markup=markup)[cite: 10]
