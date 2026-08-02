@@ -9,17 +9,21 @@ scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 async def disparar_troca_por_categoria(client=None):
     logger.info("🔄 Executando rotina: disparar_troca_por_categoria (12h/20h)...")
+    
+    if not client:
+        logger.error("❌ ERRO CRÍTICO: O client do Pyrogram não foi passado para a rotina de disparo!")
+        return
+
     try:
         async with db_pool.acquire() as conn:
-            # 1. Busca todos os canais aptos (reais aprovados + sementes)
+            # 1. Busca todos os canais aptos para compor as listas
             canais = await conn.fetch("""
                 SELECT chat_id, titulo, invite_link, categoria, semente 
                 FROM canais 
-                WHERE ativo = TRUE AND (aprovado = TRUE OR semente = TRUE)
+                WHERE ativo = TRUE AND aprovado = TRUE
             """)
             
-            # 2. Busca todos os canais de destino onde a lista é postada
-            # (Adicionamos uma coluna 'ultima_mensagem_id' na tabela canais para guardar o ID da lista anterior)
+            # 2. Busca os canais de destino onde a lista será postada
             canais_destino = await conn.fetch("""
                 SELECT chat_id, categoria, ultima_mensagem_id 
                 FROM canais 
@@ -27,8 +31,10 @@ async def disparar_troca_por_categoria(client=None):
             """)
 
             if not canais or not canais_destino:
-                logger.warning("⚠️ Canais insuficientes para o disparo da troca.")
+                logger.warning(f"⚠️ Canais insuficientes no banco. Encontrados: {len(canais)} para conteúdo e {len(canais_destino)} para destino.")
                 return
+
+        logger.info(f"📊 Total de canais carregados para conteúdo: {len(canais)} | Destinos: {len(canais_destino)}")
 
         # Agrupa os canais de conteúdo por categoria
         canais_por_categoria = {cat: [] for cat in CATEGORIAS_DISPONIVEIS.keys()}
@@ -42,25 +48,26 @@ async def disparar_troca_por_categoria(client=None):
             cat_destino = destino['categoria'] if destino['categoria'] in canais_por_categoria else "geral"
             ultima_msg_id = destino['ultima_mensagem_id']
             
-            # Se o bot salvou o ID da última lista enviada neste canal, tenta apagá-la primeiro
-            if client and ultima_msg_id:
+            # Tenta apagar a lista anterior se ela existir registrada
+            if ultima_msg_id:
                 try:
                     await client.delete_messages(chat_id_destino, ultima_msg_id)
                     logger.info(f"🗑️ Lista anterior (ID: {ultima_msg_id}) apagada no canal {chat_id_destino}")
                 except Exception as del_err:
-                    logger.warning(f"⚠️ Não foi possível apagar a lista anterior no canal {chat_id_destino}: {del_err}")
+                    logger.warning(f"⚠️ Não foi possível apagar a lista anterior no canal {chat_id_destino} (pode já ter sido apagada): {del_err}")
 
             # Pega o pool da categoria do canal
-            pool_canais = list(canais_por_categoria.get(cat_destino, canais_por_categoria["geral"]))
+            pool_canais = list(canais_por_categoria.get(cat_destino, canais_por_categoria.get("geral", [])))
             
             if len(pool_canais) < 2:
+                logger.warning(f"⚠️ Poucos canais na categoria '{cat_destino}' para montar a lista do canal {chat_id_destino}.")
                 continue
 
             # Separa reais e sementes para garantir prioridade aos usuários reais
             reais = [c for c in pool_canais if not c['semente']]
             sementes = [c for c in pool_canais if c['semente']]
 
-            # EMBARALHAMENTO INDIVIDUAL: Cada canal recebe uma ordem única
+            # Embaralhamento individual para gerar listas diferentes em cada canal
             random.shuffle(reais)
             random.shuffle(sementes)
 
@@ -82,24 +89,23 @@ async def disparar_troca_por_categoria(client=None):
             texto_lista += f"\n🤖 Divulgue seu canal você também!"
 
             # Envia a nova lista e salva o ID da mensagem no banco
-            if client:
-                try:
-                    msg_enviada = await client.send_message(chat_id_destino, texto_lista)
-                    
-                    # Atualiza o banco com o ID da nova mensagem para conseguir apagá-la na próxima rodada
-                    async with db_pool.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2",
-                            msg_enviada.id, chat_id_destino
-                        )
+            try:
+                msg_enviada = await client.send_message(chat_id_destino, texto_lista)
+                
+                # Atualiza o banco com o ID da nova mensagem
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE canais SET ultima_mensagem_id = $1 WHERE chat_id = $2",
+                        msg_enviada.id, chat_id_destino
+                    )
 
-                    logger.info(f"📤 Nova lista exclusiva enviada e registrada para o canal ID: {chat_id_destino}")
-                except Exception as ex:
-                    logger.error(f"❌ Erro ao enviar nova lista para o canal {chat_id_destino}: {ex}")
+                logger.info(f"📤 [SUCESSO] Lista exclusiva enviada para o canal ID: {chat_id_destino} (Msg ID: {msg_enviada.id})")
+            except Exception as ex:
+                logger.error(f"❌ Erro ao enviar nova lista para o canal {chat_id_destino}: {ex}")
 
         logger.info("✅ Rotina 'disparar_troca_por_categoria' finalizada com sucesso.")
     except Exception as e:
-        logger.error(f"❌ Erro na rotina de troca por categoria: {e}")
+        logger.error(f"❌ Erro crítico na rotina de troca por categoria: {e}")
 
 async def monitorar_membros_semanal():
     logger.info("👥 Executando rotina: monitorar_membros_semanal...")
@@ -113,7 +119,6 @@ async def monitorar_membros_semanal():
 def iniciar_agendamentos(client_bot=None):
     logger.info("⏰ Registrando rotinas no agendador...")
     
-    # Agendamento fixo às 12:00 e às 20:00 todos os dias usando Cron Trigger
     scheduler.add_job(
         disparar_troca_por_categoria, 
         args=[client_bot],
@@ -134,4 +139,4 @@ def iniciar_agendamentos(client_bot=None):
         replace_existing=True
     )
     
-    logger.info("✅ Todas as rotinas foram registradas no APScheduler com sucesso.")
+    logger.info("✅ Todas las rotinas foram registradas no APScheduler com sucesso.")
