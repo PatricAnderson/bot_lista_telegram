@@ -2,6 +2,25 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import database
 from config import bot, ADMIN_ID, CATEGORIAS_DISPONIVEIS, admin_estados
 
+def gerar_markup_categorias(selecionadas):
+    markup = InlineKeyboardMarkup()
+    markup.row(InlineKeyboardButton("🌐 ADICIONAR EM TODAS", callback_data="admaddcat_todas"))
+    
+    chaves = list(CATEGORIAS_DISPONIVEIS.keys())
+    for i in range(0, len(chaves), 2):
+        linha = []
+        for j in range(2):
+            if i + j < len(chaves):
+                cat_key = chaves[i+j]
+                nome = CATEGORIAS_DISPONIVEIS.get(cat_key, cat_key)
+                icone = "✅ " if cat_key in selecionadas else ""
+                linha.append(InlineKeyboardButton(f"{icone}{nome}", callback_data=f"admaddcat_{cat_key}"))
+        markup.row(*linha)
+        
+    markup.row(InlineKeyboardButton("💾 Continuar com Selecionados", callback_data="admaddcat_continuar"))
+    markup.row(InlineKeyboardButton("⬅️ Cancelar", callback_data="admin_painel"))
+    return markup
+
 @bot.callback_query_handler(func=lambda call: True)
 async def callback_handler(call):
     data = call.data
@@ -82,23 +101,47 @@ async def callback_handler(call):
 
     elif data == "admin_addlink":
         if ADMIN_ID and user_id != ADMIN_ID: return
-        markup = InlineKeyboardMarkup()
-        markup.row(InlineKeyboardButton("🌐 TODAS AS CATEGORIAS", callback_data="admaddcat_todas"))
         
-        chaves = list(CATEGORIAS_DISPONIVEIS.keys())
-        for i in range(0, len(chaves), 2):
-            linha = [InlineKeyboardButton(CATEGORIAS_DISPONIVEIS[chaves[i]], callback_data=f"admaddcat_{chaves[i]}")]
-            if i + 1 < len(chaves):
-                linha.append(InlineKeyboardButton(CATEGORIAS_DISPONIVEIS[chaves[i+1]], callback_data=f"admaddcat_{chaves[i+1]}"))
-            markup.row(*linha)
-            
-        await bot.edit_message_text("Selecione a categoria alvo:", chat_id_msg, msg_id, reply_markup=markup)
+        # Inicia a lista vazia de categorias escolhidas
+        admin_estados[user_id] = {"categorias": [], "etapa": "selecionando_categorias"}
+        
+        markup = gerar_markup_categorias([])
+        await bot.edit_message_text("Selecione **1 ou mais nichos** abaixo e clique em Continuar:", chat_id_msg, msg_id, reply_markup=markup, parse_mode="Markdown")
 
     elif data.startswith("admaddcat_"):
         if ADMIN_ID and user_id != ADMIN_ID: return
         cat = data.split("_", 1)[1]
-        admin_estados[user_id] = {"categoria": cat, "etapa": "aguardando_titulo"}
-        await bot.edit_message_text(f"✍️ Alvo: {cat}\nEnvie o **Título**:", chat_id_msg, msg_id, parse_mode="Markdown")
+        estado = admin_estados.get(user_id, {})
+        
+        if cat == "todas":
+            admin_estados[user_id] = {"categorias": ["todas"], "etapa": "aguardando_titulo"}
+            await bot.edit_message_text("🌐 Categoria **TODAS** selecionada!\n\n✍️ Envie o **Título** do link fixo:", chat_id_msg, msg_id, parse_mode="Markdown")
+            return
+            
+        elif cat == "continuar":
+            selecionadas = estado.get("categorias", [])
+            if not selecionadas:
+                return await bot.answer_callback_query(call.id, "⚠️ Selecione pelo menos um nicho primeiro!", show_alert=True)
+            
+            admin_estados[user_id]["etapa"] = "aguardando_titulo"
+            cats_str = ", ".join(selecionadas)
+            await bot.edit_message_text(f"✅ Nichos: `{cats_str}`\n\n✍️ Envie o **Título** do link fixo:", chat_id_msg, msg_id, parse_mode="Markdown")
+            return
+            
+        else:
+            # Alterna a categoria (adiciona se não tem, remove se já tem)
+            selecionadas = estado.get("categorias", [])
+            if cat in selecionadas:
+                selecionadas.remove(cat)
+            else:
+                selecionadas.append(cat)
+                
+            admin_estados[user_id]["categorias"] = selecionadas
+            
+            # Atualiza os botões instantaneamente
+            markup = gerar_markup_categorias(selecionadas)
+            await bot.edit_message_reply_markup(chat_id_msg, msg_id, reply_markup=markup)
+            return
 
     elif data == "admin_listlinks":
         if ADMIN_ID and user_id != ADMIN_ID: return
