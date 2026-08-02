@@ -45,14 +45,29 @@ async def callback_handler(call):
     elif data.startswith("aprovar_"):
         if ADMIN_ID and user_id != ADMIN_ID: return
         chat_id = int(data.split("_")[1])
+        
         async with database.db_pool.acquire() as conn:
             canal = await conn.fetchrow("UPDATE canais SET aprovado = TRUE, ativo = TRUE WHERE chat_id = $1 RETURNING categoria, dono_id, titulo", chat_id)
+            
             if canal:
-                await conn.execute("DELETE FROM canais WHERE chat_id IN (SELECT chat_id FROM canais WHERE semente = TRUE AND categoria = $1 LIMIT 1)", canal['categoria'])
+                await conn.execute("""
+                    DELETE FROM canais 
+                    WHERE chat_id IN (
+                        SELECT chat_id 
+                        FROM canais 
+                        WHERE semente = TRUE AND categoria = $1 
+                        LIMIT 1
+                    )
+                """, canal['categoria'])
+                
         await bot.answer_callback_query(call.id, "✅ Aprovado!", show_alert=True)
+        
         if canal:
-            try: await bot.send_message(canal['dono_id'], f"🎉 Canal **{canal['titulo']}** aprovado!", parse_mode="Markdown")
-            except: pass
+            try: 
+                await bot.send_message(canal['dono_id'], f"🎉 Canal **{canal['titulo']}** aprovado!", parse_mode="Markdown")
+            except: 
+                pass
+                
         call.data = "admin_pendentes"
         return await callback_handler(call)
 
@@ -100,7 +115,8 @@ async def callback_handler(call):
     elif data.startswith("admdel_"):
         if ADMIN_ID and user_id != ADMIN_ID: return
         link_id = int(data.split("_")[1])
-        async with database.db_pool.acquire() as conn: await conn.execute("DELETE FROM links_fixos WHERE id = $1", link_id)
+        async with database.db_pool.acquire() as conn: 
+            await conn.execute("DELETE FROM links_fixos WHERE id = $1", link_id)
         await bot.answer_callback_query(call.id, "Removido!", show_alert=True)
         call.data = "admin_listlinks"
         return await callback_handler(call)
@@ -173,25 +189,30 @@ async def callback_handler(call):
 
     elif data.startswith("remover_"):
         chat_id = int(data.split("_")[1])
-        async with database.db_pool.acquire() as conn: await conn.execute("DELETE FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
+        async with database.db_pool.acquire() as conn: 
+            await conn.execute("DELETE FROM canais WHERE chat_id = $1 AND dono_id = $2", chat_id, user_id)
         await bot.answer_callback_query(call.id, "Apagado!", show_alert=True)
         call.data = "meus_canais"
         return await callback_handler(call)
 
     elif data.startswith("setcat_"):
         chat_id, cat = int(data.split("_")[1]), data.split("_")[2]
-        async with database.db_pool.acquire() as conn: await conn.execute("UPDATE canais SET categoria = $1 WHERE chat_id = $2", cat, chat_id)
+        async with database.db_pool.acquire() as conn: 
+            await conn.execute("UPDATE canais SET categoria = $1 WHERE chat_id = $2", cat, chat_id)
         
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("Início", callback_data="voltar_inicio"))
         await bot.edit_message_text(f"Categoria `{cat}` salva! Aguarde aprovação.", chat_id_msg, msg_id, reply_markup=markup, parse_mode="Markdown")
         
         if ADMIN_ID:
-            try: await bot.send_message(ADMIN_ID, f"🔔 Novo canal pendente. ID: {chat_id}")
-            except: pass
+            try: 
+                await bot.send_message(ADMIN_ID, f"🔔 Novo canal pendente. ID: {chat_id}")
+            except: 
+                pass
 
     elif data == "voltar_inicio":
-        if user_id in admin_estados: del admin_estados[user_id]
+        if user_id in admin_estados: 
+            del admin_estados[user_id]
         markup = InlineKeyboardMarkup()
         if ADMIN_ID and user_id == ADMIN_ID: 
             markup.row(InlineKeyboardButton("🛠️ Painel Admin", callback_data="admin_painel"))
