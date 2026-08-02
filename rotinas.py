@@ -10,8 +10,15 @@ scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 async def disparar_troca_por_categoria(client=None):
     logger.info("🔄 Executando rotina: disparar_troca_por_categoria (12h/20h)...")
     
+    # Se o client não foi passado como argumento, tenta importá-lo do main ou usá-lo globalmente
     if not client:
-        logger.error("❌ ERRO CRÍTICO: O client do Pyrogram não foi passado para a rotina de disparo!")
+        try:
+            from main import app as client
+        except ImportError:
+            pass
+
+    if not client:
+        logger.error("❌ ERRO CRÍTICO: O client do Pyrogram não está disponível para o disparo!")
         return
 
     try:
@@ -54,7 +61,7 @@ async def disparar_troca_por_categoria(client=None):
                     await client.delete_messages(chat_id_destino, ultima_msg_id)
                     logger.info(f"🗑️ Lista anterior (ID: {ultima_msg_id}) apagada no canal {chat_id_destino}")
                 except Exception as del_err:
-                    logger.warning(f"⚠️ Não foi possível apagar a lista anterior no canal {chat_id_destino} (pode já ter sido apagada): {del_err}")
+                    logger.warning(f"⚠️ Não foi possível apagar a lista anterior no canal {chat_id_destino}: {del_err}")
 
             # Pega o pool da categoria do canal
             pool_canais = list(canais_por_categoria.get(cat_destino, canais_por_categoria.get("geral", [])))
