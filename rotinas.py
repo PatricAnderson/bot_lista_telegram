@@ -26,8 +26,9 @@ async def disparar_troca_por_categoria(client_bot=None):
             bot_link = "https://t.me/"
 
         async with db_pool.acquire() as conn:
+            # Adicionado a busca da coluna 'membros'
             canais = await conn.fetch("""
-                SELECT chat_id, titulo, invite_link, categoria, semente 
+                SELECT chat_id, titulo, invite_link, categoria, semente, membros 
                 FROM canais 
                 WHERE ativo = TRUE AND aprovado = TRUE
             """)
@@ -38,12 +39,18 @@ async def disparar_troca_por_categoria(client_bot=None):
                 WHERE ativo = TRUE AND aprovado = TRUE AND semente = FALSE
             """)
 
-            # Puxa os links fixos para colocar no topo dos botões
             links_fixos_db = await conn.fetch("SELECT titulo, url, categoria FROM links_fixos")
 
             if not canais or not canais_destino:
                 logger.warning(f"⚠️ Canais insuficientes no banco.")
                 return
+
+        # Calcula totais para a copy do texto
+        total_canais = len(canais)
+        # Soma os membros (garantindo que ignora valores nulos)
+        total_membros = sum(c['membros'] for c in canais if c.get('membros') is not None)
+        # Formata o número para o padrão brasileiro (ex: 1.500.000)
+        total_membros_fmt = f"{total_membros:,}".replace(",", ".")
 
         # Organiza os canais por categoria
         canais_por_categoria = {cat: [] for cat in CATEGORIAS_DISPONIVEIS.keys()}
@@ -90,16 +97,23 @@ async def disparar_troca_por_categoria(client_bot=None):
             if not lote_atual:
                 continue
 
-            # Montagem do visual da mensagem e botões
-            texto_lista = f"💦 **OS MELHORES CANAIS - {CATEGORIAS_DISPONIVEIS.get(cat_destino, 'Geral').upper()}!**\n\n🔥 Acesse agora e divirta-se!"
+            # Novo texto formatado com gatilhos e contagem real
+            texto_lista = (
+                f"💦 **OS MELHORES CANAIS - {CATEGORIAS_DISPONIVEIS.get(cat_destino, 'Geral').upper()}!**\n\n"
+                f"📊 Já somos **{total_canais}** canais cadastrados!\n\n"
+                f"🚀 **Quer divulgar o seu canal aqui também?**\n"
+                f"Cadastre-se no botão abaixo e seja exibido em mais de **{total_canais}** para **{total_membros_fmt} membros** simultâneos!\n\n"
+                f"🔥 Acesse agora e divirta-se:"
+            )
+
             markup = InlineKeyboardMarkup()
 
-            # 1. Links Fixos (Máximo 2, priorizando os da categoria específica, depois os globais)
+            # 1. Links Fixos (Máximo 2)
             fixos_deste_nicho = links_fixos_por_categoria.get(cat_destino, []) + links_fixos_todas
             for fixo in fixos_deste_nicho[:2]:
                 markup.row(InlineKeyboardButton(text=fixo['titulo'], url=fixo['url']))
 
-            # 2. Botoes dos Canais (2 por linha para ficar compacto igual à imagem)
+            # 2. Botoes dos Canais (2 por linha)
             botoes_canais = []
             for canal in lote_atual:
                 link = canal['invite_link'] or "https://t.me/"
@@ -111,7 +125,7 @@ async def disparar_troca_por_categoria(client_bot=None):
                 else:
                     markup.row(botoes_canais[i])
 
-            # 3. Botão de Cadastro no Bot (Última linha)
+            # 3. Botão de Cadastro no Bot
             markup.row(InlineKeyboardButton(text="📋 Participar da Lista", url=bot_link))
 
             try:
